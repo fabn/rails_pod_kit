@@ -8,7 +8,7 @@ packaged behind a single, opinionated entry point:
   worker (Sidekiq) processes — no sidecar, no separate collector process. A
   metrics agent (e.g. the Datadog Agent via OpenMetrics autodiscovery) scrapes
   the pod directly.
-- **Health checks** on `/healthz` (database, cache, Redis, optionally Sidekiq),
+- **Health checks** on `/healthz` (database, cache, optionally Redis and Sidekiq),
   wired for Kubernetes startup/liveness/readiness probes — a thin, opinionated
   wrapper around [health-monitor-rails](https://github.com/lbeder/health-monitor-rails).
 
@@ -90,8 +90,10 @@ no initializers.
 
 `Health.install!` configures health-monitor-rails with the kit's defaults:
 endpoint at `/healthz`, checking **database** (health_monitor's default),
-**cache**, **Redis** (connection injected by the host) and — when a `sidekiq:`
-thresholds hash is given — **Sidekiq**. The gem's Railtie mounts
+**cache**, — when a `redis:` connection is given — **Redis** (connection
+injected by the host) and — when a `sidekiq:` thresholds hash is given —
+**Sidekiq**. Omit `redis:` on hosts with no Redis dependency (e.g. a Solid
+Queue stack) to get a database + cache only endpoint. The gem's Railtie mounts
 `HealthMonitor::Engine` at `/` automatically; pass `mount: false` to keep
 route ownership (custom mount point, constraints) and mount it yourself in
 `config/routes.rb`. Any further tuning goes through the optional block, which
@@ -99,12 +101,21 @@ receives the `HealthMonitor` configuration.
 
 ```ruby
 RailsPodKit::Health.install!(
-  redis:   { url: ENV['REDIS_URL'] }, # or a ready Redis/ConnectionPool object
+  redis:   { url: ENV['REDIS_URL'] }, # optional: a ready Redis/ConnectionPool
+                                      # object or options hash; omit for no
+                                      # Redis provider
   path:    :healthz,                  # default
   sidekiq: { queue_size: 200, latency: 10.minutes }
 ) do |config|
   config.error_callback = ->(e) { ... } # host-specific extras
 end
+```
+
+Without a `redis:` argument the endpoint checks only database and cache
+(plus Sidekiq when its thresholds are given):
+
+```ruby
+RailsPodKit::Health.install!(path: :healthz) # database + cache only
 ```
 
 Probe wiring on Kubernetes:
