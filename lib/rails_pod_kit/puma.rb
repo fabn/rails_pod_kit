@@ -29,8 +29,10 @@ module RailsPodKit
 
       # The Puma plugin only pulls in the exporter class; we must also load the
       # full mmap module so `Yabeda::Prometheus::Mmap.registry` exists and the
-      # mmap adapter is registered (it's a transitive dep, so Bundler.require in
-      # the host app doesn't auto-require it).
+      # mmap adapter is registered. The gem's main entry (lib/rails_pod_kit.rb)
+      # already loaded it at Bundler.require, so this is normally a no-op — it
+      # matters only under `puma -C config/puma.rb`, where config/puma.rb runs
+      # before Rails and thus before the main entry, so this is the first require.
       require 'yabeda/prometheus/mmap'
 
       # The control app exposes Puma's /stats over a localhost-only socket that
