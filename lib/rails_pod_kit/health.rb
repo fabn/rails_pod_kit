@@ -21,7 +21,7 @@ module RailsPodKit
   #   )
   #
   # gives the app a /healthz endpoint checking database (health_monitor's
-  # default), cache, Redis and (optionally) Sidekiq — suitable as a k8s startup
+  # default), cache and (optionally) Redis and Sidekiq — suitable as a k8s startup
   # probe. For liveness/readiness, probe `/healthz?providers[]=none` to
   # short-circuit the dependency checks once the pod is live, so a transient
   # Redis hiccup doesn't restart the app. Same trick for a manual basic check:
@@ -35,8 +35,11 @@ module RailsPodKit
 
     # Configures HealthMonitor with the kit's defaults.
     #
-    # redis:   Redis connection options hash (same shape the host passes to
-    #          Sidekiq) or a ready connection object (Redis / ConnectionPool).
+    # redis:   optional Redis connection options hash (same shape the host
+    #          passes to Sidekiq) or a ready connection object (Redis /
+    #          ConnectionPool); when given the Redis provider is added. Omit
+    #          entirely (or pass nil) on hosts with no Redis dependency to get
+    #          a database + cache only endpoint.
     # path:    mount-relative endpoint path (default :healthz).
     # sidekiq: optional thresholds hash; when given the Sidekiq provider is
     #          added with the provided `queue_size:` / `latency:` overrides
@@ -51,14 +54,17 @@ module RailsPodKit
     #
     # Any further host-specific tuning (extra providers, error callback, …) can
     # be done in the block, which receives the HealthMonitor configuration.
-    def install!(redis:, path: :healthz, sidekiq: nil, silence_controller_log: true, mount: true)
+    def install!(redis: nil, path: :healthz, sidekiq: nil, silence_controller_log: true, mount: true)
       @auto_mount = mount
 
       HealthMonitor.configure do |config|
         config.path = path
         config.cache
-        config.redis.configure do |redis_config|
-          redis_config.connection = build_connection(redis)
+
+        if redis
+          config.redis.configure do |redis_config|
+            redis_config.connection = build_connection(redis)
+          end
         end
 
         if sidekiq

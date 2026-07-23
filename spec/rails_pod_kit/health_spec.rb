@@ -28,6 +28,13 @@ RSpec.describe RailsPodKit::Health do
       expect(provider_names).to contain_exactly('Database', 'Cache', 'Redis')
     end
 
+    it 'skips the redis provider when redis is omitted' do
+      described_class.install!(silence_controller_log: false)
+
+      expect(HealthMonitor.configuration.path).to eq(:healthz)
+      expect(provider_names).to contain_exactly('Database', 'Cache')
+    end
+
     it 'builds the redis connection from the host-injected options hash' do
       described_class.install!(redis: { url: 'redis://example:6379/1' }, silence_controller_log: false)
 
