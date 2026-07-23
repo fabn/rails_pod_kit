@@ -332,7 +332,12 @@ Booting the full host app just to read a handful of Redis counters would cost
   require only the config core, so the Rails-free exporter stays
   railties-free and a `puma -C config/puma.rb` boot (which evaluates
   `config/puma.rb` before Rails) still gets the integrations once
-  `Bundler.require` runs.
+  `Bundler.require` runs. The main file also loads the yabeda-prometheus-mmap
+  adapter at require time — before any host initializer runs — so host
+  initializers may declare Yabeda metrics (yabeda-rails, yabeda-activejob, a
+  custom collector) safely: the adapter registers itself while no metric exists
+  yet, regardless of whether the app boots via `bin/rails server` or
+  `puma -C config/puma.rb`.
 
 ## Local verification
 

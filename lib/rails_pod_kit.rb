@@ -43,6 +43,19 @@ require 'rails_pod_kit/config'
 #   - under `puma -C config/puma.rb` — where Puma evaluates config/puma.rb
 #     (and thus rails_pod_kit/puma) before Rails exists — this file is still
 #     fresh for Bundler.require, so the integrations load once Rails is up.
+
+# Load the mmap adapter here — at Bundler.require, before any host initializer
+# runs — so its self-registration (`Yabeda.register_adapter` at require time)
+# happens while no Yabeda metric exists yet, making it a no-op. The adapter's
+# own `mmap.rb` requires the adapter *before* defining
+# `Yabeda::Prometheus::Mmap.registry`; if a metric is already declared when the
+# adapter loads, registration eagerly reaches for that not-yet-defined method
+# and boots crash with a NoMethodError. Under `bin/rails server` Rails boots
+# (and its initializers may declare metrics) before config/puma.rb requires the
+# adapter, so loading it here is what makes the order-of-boot irrelevant. The
+# lazy require in RailsPodKit::Puma.activate then degrades to a cheap no-op.
+require 'yabeda/prometheus/mmap'
+
 require 'rails_pod_kit/sidekiq'
 require 'rails_pod_kit/health'
 require 'rails_pod_kit/railtie'
