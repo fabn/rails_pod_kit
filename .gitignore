@@ -1,0 +1,10 @@
+Gemfile.lock
+/gemfiles/*.gemfile.lock
+/.bundle/
+/pkg/
+/tmp/
+/vendor/
+.rspec_status
+/coverage/
+*.gem
+.claude/settings.local.json

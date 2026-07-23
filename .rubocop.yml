@@ -1,0 +1,102 @@
+plugins:
+  - rubocop-performance
+  - rubocop-rspec
+
+inherit_mode:
+  merge:
+    - Exclude
+
+AllCops:
+  NewCops: enable
+  SuggestExtensions: false
+  TargetRubyVersion: 3.3
+  Exclude:
+    - 'bin/**/*'
+    - 'gemfiles/**/*'
+    - 'vendor/**/*'
+
+Style/BlockDelimiters:
+  AllowedMethods: [lambda, proc, it, expect]
+
+Style/FetchEnvVar:
+  Enabled: false
+
+Style/Documentation:
+  Enabled: false
+
+Style/FrozenStringLiteralComment:
+  Enabled: false
+
+Layout/LineLength:
+  Max: 150
+
+Lint/MissingSuper:
+  Enabled: false
+
+Naming/MethodParameterName:
+  AllowedNames: ['x', 'y', 'w', 'h', 'km', 'to', 'id', 'db', 'as', 'io']
+
+RSpec/AnyInstance:
+  Enabled: false
+
+RSpec/ExampleLength:
+  Max: 12
+  CountAsOne: ['array', 'hash', 'heredoc']
+
+RSpec/MessageSpies:
+  Enabled: false
+
+# The gem uses plain doubles deliberately (e.g. a Puma::DSL stand-in) so the
+# isolated specs never have to load Puma / Sidekiq to be verified against.
+RSpec/VerifiedDoubles:
+  Enabled: false
+
+# The metrics-endpoint invariant is a behavioural spec, not tied to one class.
+RSpec/DescribeClass:
+  Enabled: false
+
+RSpec/MultipleDescribes:
+  Enabled: false
+
+RSpec/MultipleExpectations:
+  Max: 5
+
+RSpec/MultipleMemoizedHelpers:
+  Max: 8
+
+RSpec/NamedSubject:
+  Enabled: false
+
+RSpec/NestedGroups:
+  Max: 5
+
+RSpec/SubjectStub:
+  Enabled: false
+
+RSpec/NotToNot:
+  EnforcedStyle: to_not
+
+RSpec/VariableName:
+  EnforcedStyle: snake_case
+
+RSpec/IndexedLet:
+  Enabled: false
+
+RSpec/SpecFilePathFormat:
+  Enabled: false
+
+Metrics/AbcSize:
+  Enabled: false
+
+Metrics/ClassLength:
+  Max: 150
+
+Metrics/BlockLength:
+  Enabled: false
+
+Metrics/CyclomaticComplexity:
+  Enabled: false
+
+Metrics/MethodLength:
+  Max: 20
+  CountAsOne: ['array', 'hash', 'heredoc']
