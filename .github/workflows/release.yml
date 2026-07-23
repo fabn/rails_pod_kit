@@ -19,3 +19,13 @@ jobs:
           ruby-version: '3.4'
           bundler-cache: true
       - uses: rubygems/release-gem@v1
+        with:
+          # Run our own propagation poll below so we can exclude the "full
+          # index" awaiter (see next step).
+          await-release: false
+      - name: Wait for release to propagate
+        # rubygems.org regenerates its legacy "full index" with a long delay,
+        # so the default poll times out (~290s) and fails the job even though
+        # the gem is already published. Skip only that awaiter; the compact
+        # index checks (versions/info/gems/gemspecs/names) still gate the step.
+        run: gem exec rubygems-await --skip "full index" pkg/*.gem
