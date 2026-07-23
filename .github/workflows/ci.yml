@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rspec:
+    name: RSpec (Ruby ${{ matrix.ruby }}, Rails ${{ matrix.rails }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # Edges instead of the full cross product: every Rails on the newest
+      # Ruby, plus the oldest supported Ruby on both Rack boundaries.
+      matrix:
+        include:
+          - { ruby: '3.4', rails: '7.1' }
+          - { ruby: '3.4', rails: '7.2' }
+          - { ruby: '3.4', rails: '8.0' }
+          - { ruby: '3.4', rails: '8.1' }
+          - { ruby: '3.3', rails: '8.1' }
+          - { ruby: '3.3', rails: '7.1' }
+    env:
+      BUNDLE_GEMFILE: gemfiles/rails_${{ matrix.rails }}.gemfile
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+      - run: bundle exec rspec --format progress

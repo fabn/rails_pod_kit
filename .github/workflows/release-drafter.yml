@@ -1,0 +1,48 @@
+name: Release Drafter
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  update_release_draft:
+    name: Release Drafter
+    permissions:
+      contents: write
+      pull-requests: read
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.release-drafter.outputs.tag_name }}
+    steps:
+      - uses: release-drafter/release-drafter@v7
+        id: release-drafter
+        with:
+          token: ${{ github.token }}
+
+  write_version:
+    name: Write version file
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs:
+      - update_release_draft
+    steps:
+      - name: Generate bot token
+        uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+      - name: Update VERSION file
+        run: echo -n "${{ needs.update_release_draft.outputs.tag_name }}" | sed 's/^v//' > VERSION
+      - name: Commit version file
+        uses: EndBug/add-and-commit@v10
+        with:
+          add: 'VERSION'
+          message: 'Bump version to ${{ needs.update_release_draft.outputs.tag_name }}'
+          github_token: ${{ steps.app-token.outputs.token }}
