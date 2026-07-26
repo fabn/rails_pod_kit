@@ -14,6 +14,21 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+      - name: Check the tag matches the VERSION file
+        # `rake release` builds from VERSION, not from the tag. When the two
+        # disagree it builds the wrong version, finds no tag for it, and tries
+        # to create and push one from this detached-HEAD checkout — which fails
+        # after the build but before the gem is ever pushed, so the release
+        # looks published while RubyGems never got anything. Fail here instead,
+        # where the message says what to fix.
+        run: |
+          version="$(cat VERSION)"
+          tag="${{ github.event.release.tag_name }}"
+          if [ "$tag" != "v$version" ]; then
+            echo "::error::Release tag $tag does not match VERSION ($version)."
+            echo "Point the tag at a commit whose VERSION file reads ${tag#v}, then re-run."
+            exit 1
+          fi
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.4'

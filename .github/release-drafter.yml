@@ -22,9 +22,15 @@ version-resolver:
   major:
     labels:
       - 'major'
+  # `feature` and `enhancement` are the labels the categories above already use
+  # for a feature PR, so a feature drafts a minor bump without anyone having to
+  # remember a second label. Without them the draft resolved to a patch while
+  # the release was published as a minor, and the two disagreed.
   minor:
     labels:
       - 'minor'
+      - 'feature'
+      - 'enhancement'
   patch:
     labels:
       - 'patch'
