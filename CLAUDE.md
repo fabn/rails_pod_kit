@@ -8,12 +8,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 application needs to be a good Kubernetes citizen behind a single, opinionated
 entry point:
 
-- **Prometheus metrics** for Puma and Sidekiq, served **in-process** on a single
-  `/metrics` endpoint (default port `9394`) — a thin wrapper around the
+- **Prometheus metrics** for Puma, Sidekiq and SolidQueue, served **in-process**
+  on a single `/metrics` endpoint (default port `9394`) — a thin wrapper around the
   [yabeda](https://github.com/yabeda-rb) ecosystem (`yabeda`, `yabeda-puma-plugin`,
   `yabeda-sidekiq`, `yabeda-prometheus-mmap`). No sidecar, no separate collector.
+  The SolidQueue queue gauges are the gem's own — yabeda has no plugin for it.
 - **Health checks** on `/healthz` for startup/liveness/readiness probes — a thin
   wrapper around [health-monitor-rails](https://github.com/lbeder/health-monitor-rails).
+- **A supervised SolidQueue scheduler thread**, so the job executor can be
+  autoscaled to zero without stranding recurring/scheduled jobs.
 
 The gem is deliberately **connection-agnostic**: it never reads `REDIS_URL` and
 makes no TLS decisions. Where a Redis connection is needed the host injects its
@@ -45,9 +48,12 @@ bundle exec rubocop -a                   # Lint with safe auto-correct
 bundle exec rake                         # Run both rspec and rubocop (default task)
 ```
 
-The specs run **in isolation** — they do not boot a host Rails app. Every
-metrics hook is a complete no-op when the exporter is disabled or in the `test`
-environment, so the suite never binds port `9394`.
+The specs run **in isolation** — they do not boot a host Rails app, and there is
+no database. Every metrics hook is a complete no-op when the exporter is disabled
+or in the `test` environment, so the suite never binds port `9394`. The
+SolidQueue scheduler is the one piece not gated on that switch (it is not an
+exporter); it stays out of the suite because nothing calls it — in a host app it
+is started from Puma's `after_booted`.
 
 ### CI Matrix
 
@@ -99,10 +105,27 @@ There are two distinct entry points, by design:
   `config/puma.rb`. Drives `Yabeda.configure!` from the exporter-boot hook,
   because `config/puma.rb` is evaluated before Rails and yabeda's own Railtie may
   never register.
+- **`RailsPodKit::Exporter`** (`lib/rails_pod_kit/exporter.rb`) — the in-process
+  WEBrick `/metrics` server shared by every **non-Puma** entry point (Sidekiq,
+  the global exporter, the SolidQueue pod). One latch per process, so no entry
+  point can double-bind the port. Under Puma the exporter comes from the
+  `:yabeda_prometheus` plugin instead.
 - **`RailsPodKit::Sidekiq`** (`lib/rails_pod_kit/sidekiq.rb`) — called from
   inside `Sidekiq.configure_server`; requires yabeda-sidekiq, applies the
-  global-metrics policy, and starts the in-process WEBrick exporter. Drives
+  global-metrics policy, and starts the in-process exporter. Drives
   `Yabeda.configure!` from Sidekiq's `:startup` lifecycle event.
+- **`RailsPodKit::SolidQueue`** (`lib/rails_pod_kit/solid_queue.rb` +
+  `solid_queue/`) — the scale-to-zero support, all opt-in and inert until
+  called. `Metrics` declares the `solid_queue_backlog` /
+  `solid_queue_latency_seconds` gauges and computes them from the SolidQueue
+  tables at scrape time (yabeda `collect`, no background thread; DB errors are
+  reported and swallowed so one group can't fail the whole endpoint).
+  `SchedulerRunner` runs a scheduler-only `SolidQueue::Scheduler` in a thread
+  supervised by a `Concurrent::TimerTask` — deliberately *not* the full
+  supervisor, whose Puma watchdog takes the host process down on a DB blip
+  (rails/solid_queue#512). `run_exporter!` combines both into the always-on
+  1-replica pod; unlike GlobalExporter it needs the host's ActiveRecord models,
+  so the entrypoint boots Rails first.
 - **`RailsPodKit::Health`** (`lib/rails_pod_kit/health.rb`) — opinionated
   health-monitor-rails configuration (database/cache/Redis/optionally Sidekiq).
   The Redis connection is injected by the host.
@@ -118,13 +141,20 @@ There are two distinct entry points, by design:
 
 ### The metrics invariant
 
-`spec/rails_pod_kit/metrics_invariant_spec.rb` guards that the `/metrics`
-endpoint stays **prefix-pure** — only yabeda-registered `puma_*` / `sidekiq_*`
-series may appear on it. The Datadog OpenMetrics check uses `metrics: [".*"]`
-with `raw_metric_prefix`, which only *strips* the prefix, it does not filter, so
-any unprefixed series leaking onto the endpoint would be ingested un-stripped
-under the namespace. Do not add cross-cutting metrics (process, runtime, HTTP
-request) to this exporter. See the README "Invariant" section.
+`spec/rails_pod_kit/metrics_invariant_spec.rb` guards that every series on the
+`/metrics` endpoint carries one of the kit's group prefixes — only
+yabeda-registered `puma_*` / `sidekiq_*` / `solid_queue_*` may appear. The
+Datadog OpenMetrics check uses `metrics: [".*"]` with `raw_metric_prefix`, which
+only *strips* the prefix, it does not filter, so any unprefixed series leaking
+onto the endpoint would be ingested un-stripped under the namespace. Do not add
+cross-cutting metrics (process, runtime, HTTP request) to this exporter. An
+endpoint carrying **two** groups also needs an explicit per-instance `metrics:`
+filter on the check side — which is why the SolidQueue gauges are documented as
+belonging on their own pod. See the README "Invariant" section.
+
+The exposition-level example is deliberately a *single* example:
+prometheus-client-mmap memoizes its file handles, so a second scrape under a
+fresh multiprocess dir renders an empty body.
 
 ## Versioning & Releasing
 
@@ -151,6 +181,7 @@ reads it, and the gemspec reads that. The release flow is fully automated:
 
 ```
 lib/rails_pod_kit/         # the gem
+lib/rails_pod_kit/solid_queue/  # queue gauges + supervised scheduler thread
 spec/rails_pod_kit/        # isolated unit specs + the metrics invariant spec
 Appraisals                 # Rails/Rack test matrix definitions
 gemfiles/                  # generated, committed appraisal gemfiles
@@ -162,10 +193,12 @@ VERSION                    # single source of truth for the version
 ## Dependencies
 
 - **Runtime:** the yabeda stack (`yabeda`, `yabeda-sidekiq`, `yabeda-puma-plugin`,
-  `yabeda-prometheus-mmap`), `webrick`, `anyway_config`, `health-monitor-rails`,
-  `redis`. Declared in `rails_pod_kit.gemspec`.
-- **Host-provided (test only):** `puma`, `sidekiq`, `rack` and — under Rack 3 —
-  `rackup`. Declared in the `Gemfile` / `Appraisals`, not the gemspec, because in
-  a real app they are the host's dependencies.
+  `yabeda-prometheus-mmap`), `webrick`, `anyway_config`, `concurrent-ruby`,
+  `health-monitor-rails`, `redis`. Declared in `rails_pod_kit.gemspec`.
+- **Host-provided:** `puma`, `sidekiq`, `solid_queue`, `rack` and — under Rack 3
+  — `rackup`. Not in the gemspec, because in a real app they are the host's
+  dependencies. `puma`, `sidekiq` and `rack` are in the `Gemfile` / `Appraisals`
+  for the specs; `solid_queue` is not — its specs stub the two ActiveRecord
+  models and the scheduler, so the suite needs no database.
 - Dependabot (`.github/dependabot.yml`) opens weekly bundler + github-actions
   update PRs.

@@ -3,14 +3,16 @@
 The operational endpoints a Rails pod needs to be a good Kubernetes citizen,
 packaged behind a single, opinionated entry point:
 
-- **Prometheus metrics** for Puma and Sidekiq, served **in-process** on a
-  single `/metrics` endpoint (default port **9394**) in both the web (Puma) and
-  worker (Sidekiq) processes — no sidecar, no separate collector process. A
-  metrics agent (e.g. the Datadog Agent via OpenMetrics autodiscovery) scrapes
-  the pod directly.
+- **Prometheus metrics** for Puma, Sidekiq and SolidQueue, served **in-process**
+  on a single `/metrics` endpoint (default port **9394**) in the web (Puma) and
+  worker processes — no sidecar, no separate collector process. A metrics agent
+  (e.g. the Datadog Agent via OpenMetrics autodiscovery) scrapes the pod
+  directly.
 - **Health checks** on `/healthz` (database, cache, optionally Redis and Sidekiq),
   wired for Kubernetes startup/liveness/readiness probes — a thin, opinionated
   wrapper around [health-monitor-rails](https://github.com/lbeder/health-monitor-rails).
+- **A supervised SolidQueue scheduler thread**, so a SolidQueue job executor can
+  be autoscaled to zero without stranding its recurring and scheduled jobs.
 
 The metrics side is a thin wrapper around the
 [yabeda](https://github.com/yabeda-rb) ecosystem:
@@ -21,11 +23,14 @@ The metrics side is a thin wrapper around the
 | `yabeda-puma-plugin` | Puma thread-pool / worker stats + the `:yabeda` / `:yabeda_prometheus` Puma plugins |
 | `yabeda-sidekiq` | Sidekiq per-process job metrics + global/Redis-wide queue metrics |
 | `yabeda-prometheus-mmap` | Prometheus text exporter, multiprocess-safe via `prometheus-client-mmap` |
-| `webrick` | HTTP server for the Sidekiq exporter |
+| `webrick` | HTTP server for the non-Puma exporters |
 
-> Scope: **runtime/worker metrics only** (Puma backlog/threads, Sidekiq queues
-> and jobs). HTTP request-level metrics are intentionally out of scope — that is
-> covered by APM.
+The SolidQueue queue gauges are the gem's own: SolidQueue ships no metrics
+endpoint and there is no `yabeda-solid_queue` plugin to wrap.
+
+> Scope: **runtime/worker metrics only** (Puma backlog/threads, Sidekiq and
+> SolidQueue queues and jobs). HTTP request-level metrics are intentionally out
+> of scope — that is covered by APM.
 
 The gem is deliberately **connection-agnostic**: it never reads `REDIS_URL` and
 makes no TLS decisions. Wherever a Redis connection is needed (health checks,
@@ -66,6 +71,9 @@ RailsPodKit::Puma.activate(self)
 ```ruby
 RailsPodKit::Sidekiq.install!(config)
 ```
+
+On a SolidQueue stack there is no step 3 — see
+[SolidQueue](#solidqueue-scale-to-zero) instead.
 
 ## Configuration
 
@@ -148,6 +156,8 @@ endpoint every few seconds); pass `silence_controller_log: false` to keep it.
   `sidekiq_queue_latency`, `sidekiq_active_processes`,
   `sidekiq_active_workers_count`, `sidekiq_jobs_retry_count`,
   `sidekiq_jobs_dead_count`, `sidekiq_jobs_scheduled_count`.
+- **SolidQueue (DB-wide):** `solid_queue_backlog`,
+  `solid_queue_latency_seconds`.
 
 Series are intentionally **untagged**: a scraping agent adds
 `service`/`env`/`version` and `kube_*` tags at scrape time, so the gem doesn't
@@ -182,7 +192,23 @@ instances:
     raw_metric_prefix: "sidekiq_"   # sidekiq_queue_latency -> sidekiq.queue_latency
     metrics: [".*"]
     tag_by_endpoint: false
+
+# SolidQueue (the pod publishing the queue gauges) — :9394/metrics
+instances:
+  - openmetrics_endpoint: "http://%%host%%:9394/metrics"
+    namespace: "solid_queue"
+    raw_metric_prefix: "solid_queue_"  # solid_queue_backlog -> solid_queue.backlog
+    metrics: [".*"]
+    tag_by_endpoint: false
 ```
+
+**One prefix per endpoint.** `metrics: [".*"]` ingests *everything* served
+there, so each block above assumes its endpoint carries a single group — which
+is why the SolidQueue gauges are best published from their own pod (below).
+Where one endpoint really must carry two groups (e.g. a web pod exposing both
+`puma_*` and `solid_queue_*`), give **every** instance on it an explicit filter
+— `metrics: ["puma_.*"]` and `metrics: ["solid_queue_.*"]` — or each namespace
+will swallow the other's series un-stripped.
 
 On Kubernetes this is typically wired as pod-annotation autodiscovery. The
 `openmetrics_endpoint` above uses the Datadog Agent's `%%host%%` autodiscovery
@@ -190,27 +216,29 @@ template (resolves to the pod IP) — a **non-k8s adopter** (a plain `conf.yaml`
 check) swaps `%%host%%:9394` for the real `host:port`; everything else
 (`namespace`, `raw_metric_prefix`, `metrics`) is identical.
 
-### Invariant — the endpoint must stay prefix-pure
+### Invariant — every series must carry a group prefix
 
 The Datadog check uses `metrics: [".*"]`, which ingests **every** series on the
 endpoint. `raw_metric_prefix` only *strips* the prefix when present — **it does
 not filter**. So the naming scheme above holds only because the `/metrics`
-endpoint exposes **solely** yabeda-registered series, all sharing the
-`puma_` / `sidekiq_` group prefix:
+endpoint exposes **solely** yabeda-registered series, each carrying its
+`puma_` / `sidekiq_` / `solid_queue_` group prefix:
 
-- the gem registers only the `:puma` and `:sidekiq` yabeda groups (no process,
-  GC, or Ruby-runtime collectors);
+- the gem registers only the `:puma`, `:sidekiq` and `:solid_queue` yabeda
+  groups (no process, GC, or Ruby-runtime collectors);
 - the exposition serves Yabeda's registry only — the Prometheus client's HTTP
   request collector (`http_*`) is **not** mounted on the exporter.
 
-If a series without the `puma_` / `sidekiq_` prefix ever appeared on the
-endpoint, `metrics: [".*"]` would ingest it **un-stripped** under the namespace
-(e.g. `puma.http_requests_total`). **Do not** add cross-cutting metrics (process,
-runtime, HTTP request) to this exporter, and do not mount the Prometheus Rack
-collector on it. If you ever need such metrics, expose them on a separate
-endpoint with its own check rather than polluting this one. Conversely, any new
-metric you *do* add to the `:puma` / `:sidekiq` groups is picked up automatically
-by `[".*"]` — no check change needed.
+If an unprefixed series ever appeared on the endpoint, `metrics: [".*"]` would
+ingest it **un-stripped** under the namespace (e.g. `puma.http_requests_total`).
+**Do not** add cross-cutting metrics (process, runtime, HTTP request) to this
+exporter, and do not mount the Prometheus Rack collector on it. If you ever need
+such metrics, expose them on a separate endpoint with its own check rather than
+polluting this one. Conversely, any new metric you *do* add to an existing group
+is picked up automatically by `[".*"]` — no check change needed.
+
+`spec/rails_pod_kit/metrics_invariant_spec.rb` guards this at both the registry
+and the exposition level.
 
 > ⚠️ Renaming the namespace prefix is a **breaking metric rename** — existing
 > dashboards/monitors built on the old `puma.puma_*` / `sidekiq.sidekiq_*` series
@@ -257,6 +285,13 @@ Sidekiq job class.
 | `sidekiq.running_job_runtime` | gauge | `queue`, `worker` |
 | `sidekiq.job_runtime` | histogram | `queue`, `worker` |
 | `sidekiq.job_latency` | histogram | `queue`, `worker` |
+
+**SolidQueue — DB-wide queue state** (`namespace: solid_queue`):
+
+| canonical Datadog metric | type | functional tags |
+|---|---|---|
+| `solid_queue.backlog` | gauge | `queue` |
+| `solid_queue.latency_seconds` | gauge | `queue` |
 
 ### Where Sidekiq global metrics come from
 
@@ -313,10 +348,127 @@ declares the cluster gauges, starts the exporter and blocks until SIGTERM.
 Booting the full host app just to read a handful of Redis counters would cost
 ~300Mi RSS for nothing — this process sits at ~60Mi.
 
+## SolidQueue: scale-to-zero
+
+SolidQueue's executor has nothing to do while the queue is empty, so it is the
+natural candidate for **scale-to-zero** autoscaling (KEDA, or an HPA). Two things
+stand in the way, and the gem covers both. Everything here is opt-in; requiring
+the gem alone changes nothing.
+
+### 1. The scheduler has to move off the executor
+
+With the executor at zero there is no scheduler, so nothing enqueues the
+recurring and scheduled jobs that would wake one — the queue stays empty because
+it is empty. A k8s CronJob can't take over either: it can't own **dynamic**
+recurring tasks, the ones created and updated at runtime through
+`SolidQueue.schedule_recurring_task`.
+
+The fix is to run the *scheduler alone* on a process that is always on, and let
+the executor be nothing but dispatcher + workers (`bin/jobs` with
+`SOLID_QUEUE_SKIP_RECURRING=true`):
+
+```ruby
+# config/puma.rb — after_booted only runs in the real Puma process, never in a
+# console, a rake task or the test suite.
+after_booted { RailsPodKit::SolidQueue.start_scheduler! }
+at_exit      { RailsPodKit::SolidQueue.stop_scheduler! }
+```
+
+This is deliberately **not** `plugin :solid_queue`. That one runs the full
+supervisor, which forks and whose watchdog takes Puma down when the supervisor
+exits — and a transient Postgres disconnect is enough to cause that
+([rails/solid_queue#512](https://github.com/rails/solid_queue/issues/512)). Here
+a DB blip at worst kills the scheduler thread; a `Concurrent::TimerTask` (the
+same primitive SolidQueue supervises its own processes with) notices on the next
+tick and starts a fresh one, the process itself never notices, and the scheduler
+re-registers on recovery.
+
+Running it on every replica is safe: enqueues stay exactly-once via the unique
+index on `solid_queue_recurring_executions (task_key, run_at)`. Static tasks come
+from `config/recurring.yml` (honouring `SOLID_QUEUE_RECURRING_SCHEDULE`), dynamic
+ones from the DB.
+
+| option | default | meaning |
+|---|---|---|
+| `polling_interval` | `5` | how often the scheduler re-reads the dynamic tasks |
+| `supervision_interval` | `5` | how often we check the scheduler thread is alive |
+| `recurring_schedule_file` | `config/recurring.yml` | static task definitions; skipped when absent |
+
+`start_scheduler!` is **not** gated on `enabled` — that switch owns the metrics
+exporter, and an app may well want the scheduler with metrics off. What keeps it
+out of consoles and specs is *where* you call it from.
+
+### 2. Queue depth has to be visible
+
+SolidQueue publishes no metrics, so the autoscaler and the dashboards have
+nothing to read. `install_metrics!` adds two gauges, computed **at scrape time**
+from the SolidQueue tables (a yabeda `collect` block — no background thread, no
+cached snapshot):
+
+```ruby
+# config/initializers/rails_pod_kit.rb
+RailsPodKit::SolidQueue.install_metrics!
+```
+
+| metric | meaning |
+|---|---|
+| `solid_queue_backlog` | how many jobs could be claimed right now, per `queue` |
+| `solid_queue_latency_seconds` | how long the oldest of them has been waiting, per `queue` |
+
+"Claimable right now" is ready executions **plus** scheduled ones whose time has
+come — the dispatcher has only to move those across. A scheduled job's wait is
+measured from its `scheduled_at`, not its `created_at`: enqueuing a week ahead of
+the slot doesn't make it a week late.
+
+Both matter, and neither alone is enough: backlog misses a small-but-stalled
+queue, latency misses a large-but-moving one. A queue that drains is explicitly
+zeroed rather than left pinned at its last reading — otherwise an alert would
+keep firing on an idle system. A DB error during collection is reported and
+swallowed, never raised: this collector shares the endpoint with the other
+groups, and failing the response would lose the Puma series too.
+
+### The always-on pod
+
+The cleanest home for both is a **1-replica Deployment** that hosts the scheduler
+and publishes the gauges, decoupled from the web and the executor — so the
+signals survive either scaling to zero, and each series has exactly one source.
+`run_exporter!` is that process: it declares the gauges, starts the scheduler,
+serves `/metrics` and blocks until SIGTERM (winding the scheduler down so it
+deregisters rather than expiring).
+
+Unlike the Sidekiq global exporter it is **not** Rails-free — SolidQueue is
+ActiveRecord-backed and reads the app's own tables — so the host's entrypoint
+boots the environment first. The gem ships no executable; e.g.
+`bin/solid-queue-pod`:
+
+```ruby
+#!/usr/bin/env ruby
+require_relative '../config/environment'
+
+RailsPodKit::SolidQueue.run_exporter!
+```
+
+```
+command: ["bin/solid-queue-pod"]
+```
+
+Pass `scheduler: false` to serve the gauges only, on an app whose web process
+already hosts the scheduler. Keep the endpoint single-prefix (see
+[One prefix per endpoint](#datadog-naming--the-canonical-metric-set)) — that pod
+serves `solid_queue_*` and nothing else, so the check config needs no filters.
+
 ## Caveats
 
 - **Puma only.** The Puma plugins only activate under Puma; under any other
-  app server the in-process `/metrics` endpoint is **not** exposed.
+  app server the in-process `/metrics` endpoint is **not** exposed. The non-Puma
+  entry points (Sidekiq, the global exporter, the SolidQueue pod) serve it from
+  a WEBrick thread instead, started at most once per process.
+- **SolidQueue and Sidekiq are the host's.** The gem depends on neither; the
+  SolidQueue integration is inert until you call it, exactly like the Sidekiq one.
+- **Queue-gauge query cost.** The gauges run four small grouped aggregates per
+  scrape. `MIN(created_at)` is not covered by SolidQueue's indexes, so on a
+  backlog of many thousands of rows it is a scan — cheap at a normal scrape
+  interval, worth knowing about if you scrape aggressively.
 - **Puma control app.** `yabeda-puma-plugin` reads Puma's thread-pool stats
   through Puma's control app, so `Puma.activate` activates one on a
   localhost-only socket (`no_token: true`, never network-exposed).
@@ -351,6 +503,10 @@ curl -s localhost:9394/metrics | grep '^puma_'
 # Worker (Sidekiq): sidekiq_* series (run a job first so per-process counters appear)
 bundle exec sidekiq
 curl -s localhost:9394/metrics | grep '^sidekiq_'
+
+# SolidQueue: solid_queue_* series (enqueue a job first so the queue isn't empty)
+bin/solid-queue-pod
+curl -s localhost:9394/metrics | grep '^solid_queue_'
 
 # Health endpoint
 curl -s localhost:3000/healthz -H 'Accept: application/json'

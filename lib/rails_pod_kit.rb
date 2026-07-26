@@ -6,9 +6,10 @@ require 'rails_pod_kit/config'
 # RailsPodKit packages the operational endpoints a Rails pod needs to be a good
 # Kubernetes citizen behind a single, opinionated entry point:
 #
-# - Prometheus metrics: Puma and Sidekiq runtime metrics in Prometheus text
-#   format on an in-process /metrics endpoint (default port 9394) — no sidecar,
-#   no separate collector process. A thin wrapper around the yabeda ecosystem.
+# - Prometheus metrics: Puma, Sidekiq and SolidQueue runtime metrics in
+#   Prometheus text format on an in-process /metrics endpoint (default port
+#   9394) — no sidecar, no separate collector process. A thin wrapper around the
+#   yabeda ecosystem, plus the SolidQueue queue gauges yabeda has no plugin for.
 # - Health checks: an opinionated health-monitor-rails configuration serving
 #   liveness/readiness/startup probes on /healthz (see RailsPodKit::Health),
 #   auto-mounted by the gem's Railtie.
@@ -22,8 +23,9 @@ require 'rails_pod_kit/config'
 #   - config/initializers/sidekiq.rb          -> RailsPodKit::Sidekiq.install!(config)
 #   - config/initializers/rails_pod_kit.rb    -> RailsPodKit.configure { ... }
 #                                                RailsPodKit::Health.install!(redis: ...)
-# plus, only when running the dedicated global exporter, a host-owned
-# entrypoint (e.g. bin/pod-exporter) calling GlobalExporter.run!(redis: ...).
+# plus, only when running a dedicated always-on exporter, a host-owned
+# entrypoint calling GlobalExporter.run!(redis: ...) (Sidekiq, Rails-free) or
+# SolidQueue.run_exporter! (SolidQueue, needs the app's ActiveRecord models).
 #
 # The gem is deliberately connection-agnostic: it never reads REDIS_URL or
 # makes TLS decisions. The host injects its Redis options where needed
@@ -57,5 +59,6 @@ require 'rails_pod_kit/config'
 require 'yabeda/prometheus/mmap'
 
 require 'rails_pod_kit/sidekiq'
+require 'rails_pod_kit/solid_queue'
 require 'rails_pod_kit/health'
 require 'rails_pod_kit/railtie'

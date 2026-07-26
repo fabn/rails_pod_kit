@@ -7,11 +7,6 @@ require 'yabeda/sidekiq'
 require 'yabeda/prometheus/mmap'
 
 RSpec.describe RailsPodKit::Sidekiq do
-  before do
-    # Reset the "exporter already started" latch between examples.
-    described_class.instance_variable_set(:@server_started, nil)
-  end
-
   context 'when metrics are disabled (e.g. test env)' do
     before { RailsPodKit.configure { |c| c.enabled = false } }
 

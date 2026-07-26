@@ -12,5 +12,6 @@ RSpec.configure do |config|
   # so port-binding state never leaks between examples.
   config.before do
     RailsPodKit.reset_config!
+    RailsPodKit::Exporter.reset!
   end
 end
