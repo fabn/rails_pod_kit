@@ -35,8 +35,6 @@ template: |
   $CHANGES
 autolabeler:
   - label: 'chore'
-    files:
-      - '*.md'
     branch:
       - '/docs{0,1}\/.+/'
       - '/chore\/.+/'
