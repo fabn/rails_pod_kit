@@ -30,10 +30,17 @@ module RailsPodKit
       # Declares the gauges and registers the scrape-time collector. Safe before
       # or after `Yabeda.configure!` (yabeda replays configurators either way),
       # and a no-op on a second call.
-      def install!
+      #
+      # `queues:` pins the zero baseline (see #baseline_queues) instead of
+      # discovering it. `fail_scrape_on_error:` makes a collection failure fail
+      # the whole response rather than serve the last reading — right when this
+      # collector owns the endpoint, wrong when it shares one (see #collect!).
+      def install!(queues: nil, fail_scrape_on_error: false)
         return false if @installed
 
         require 'yabeda'
+        @baseline_queues = queues
+        @fail_scrape_on_error = fail_scrape_on_error
         declare!
         @installed = true
       end
@@ -56,15 +63,20 @@ module RailsPodKit
 
       # Called by yabeda on every scrape.
       #
-      # Errors are reported and swallowed: this collector shares the endpoint
-      # with the other groups, and letting a transient DB failure raise here
-      # would fail the whole /metrics response — losing the Puma series too, in
-      # the one process most likely to still be healthy.
+      # An error is always reported, and then either swallowed or re-raised
+      # depending on who owns the endpoint. Swallowing keeps a transient DB
+      # failure from taking the Puma series down with it on a shared endpoint —
+      # at the cost of serving the last reading, which a consumer cannot tell
+      # apart from a live one. On the dedicated pod (`run_exporter!`) there is
+      # nothing else to protect, so failing the scrape is the honest answer: the
+      # gauges go to no-data and the scraper's own `up` series carries the
+      # failure.
       def collect!
         now = ::Time.now.utc
         with_connection { publish_all(claimable_by_queue(now), now) }
       rescue StandardError => e
         ErrorReporter.report(e, source: SOURCE)
+        raise if @fail_scrape_on_error
       end
 
       # Collection runs on the exporter's HTTP thread, which would otherwise
@@ -125,9 +137,28 @@ module RailsPodKit
       # would keep an alert firing on an idle system. Track the label sets this
       # process has published and zero the ones missing from this round.
       def zero_drained_queues(current)
-        seen = (@seen_queues ||= [])
+        seen = seen_queues
         (seen - current).each { |queue| publish(queue, backlog: 0, latency: 0) }
         @seen_queues = seen | current
+      end
+
+      # Seeded with the baseline, so the zeroing above also covers queues this
+      # process has never seen busy. A gauge only exists once it has been set:
+      # without the seed an exporter that boots while the queue is empty — the
+      # steady state of a scale-to-zero deployment — publishes no series at all,
+      # and every consumer reads no-data where it should read 0.
+      def seen_queues
+        @seen_queues ||= baseline_queues
+      end
+
+      # The queues the app is known to use, pinned by the host or discovered
+      # once per process from the jobs table (one index scan, never repeated).
+      # Discovery is best-effort by construction: that table is bounded by
+      # `clear_finished_jobs_after`, so a queue idle for longer than the
+      # retention window leaves no trace. Pin `queues:` where the zero has to be
+      # guaranteed.
+      def baseline_queues
+        @baseline_queues || ::SolidQueue::Job.distinct.pluck(:queue_name).compact
       end
 
       def age_in_seconds(waiting_since, now)
@@ -136,9 +167,12 @@ module RailsPodKit
         [(now - waiting_since).to_f, 0].max
       end
 
-      # Test/reset hook — drops the published-label-set memo.
+      # Test/reset hook — drops the published-label-set memo and the install
+      # options.
       def reset!
         @seen_queues = nil
+        @baseline_queues = nil
+        @fail_scrape_on_error = false
         @installed = false
       end
     end

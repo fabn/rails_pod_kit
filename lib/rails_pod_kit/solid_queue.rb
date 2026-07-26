@@ -34,8 +34,13 @@ module RailsPodKit
 
     # Declares the queue gauges. Call from an initializer, in whichever process
     # should publish them — see the README on keeping one source per series.
-    def install_metrics!
-      Metrics.install!
+    #
+    # Options are Metrics.install!'s: `queues:` to pin the zero baseline,
+    # `fail_scrape_on_error:` to fail the scrape instead of serving the last
+    # reading when the DB is unreachable (the default only holds on an endpoint
+    # this collector shares with another group).
+    def install_metrics!(**)
+      Metrics.install!(**)
     end
 
     # Starts the supervised scheduler thread and returns the runner. Idempotent:
@@ -75,9 +80,11 @@ module RailsPodKit
     #   RailsPodKit::SolidQueue.run_exporter!
     #
     # Pass `scheduler: false` to serve the gauges only (an app whose web process
-    # already hosts the scheduler).
-    def run_exporter!(scheduler: true, **scheduler_options)
-      install_metrics!
+    # already hosts the scheduler), and `metrics:` to override the gauge options
+    # — this endpoint is the collector's own, so a collection failure fails the
+    # scrape here rather than serving the last reading.
+    def run_exporter!(scheduler: true, metrics: {}, **scheduler_options)
+      install_metrics!(fail_scrape_on_error: true, **metrics)
       start_scheduler!(**scheduler_options) if scheduler
 
       warn '[rails_pod_kit] disabled — /metrics not served by the SolidQueue exporter' unless Exporter.start!

@@ -118,8 +118,12 @@ There are two distinct entry points, by design:
   `solid_queue/`) — the scale-to-zero support, all opt-in and inert until
   called. `Metrics` declares the `solid_queue_backlog` /
   `solid_queue_latency_seconds` gauges and computes them from the SolidQueue
-  tables at scrape time (yabeda `collect`, no background thread; DB errors are
-  reported and swallowed so one group can't fail the whole endpoint).
+  tables at scrape time (yabeda `collect`, no background thread). Zeroing starts
+  from a baseline of the queues the app uses, so an idle process reads 0 instead
+  of publishing nothing at all; a DB error is always reported and, by default,
+  swallowed so one group can't fail an endpoint it shares —
+  `fail_scrape_on_error: true` (what `run_exporter!` passes on its own pod)
+  turns it into a failed scrape, i.e. honest no-data.
   `SchedulerRunner` runs a scheduler-only `SolidQueue::Scheduler` in a thread
   supervised by a `Concurrent::TimerTask` — deliberately *not* the full
   supervisor, whose Puma watchdog takes the host process down on a DB blip

@@ -421,11 +421,31 @@ measured from its `scheduled_at`, not its `created_at`: enqueuing a week ahead o
 the slot doesn't make it a week late.
 
 Both matter, and neither alone is enough: backlog misses a small-but-stalled
-queue, latency misses a large-but-moving one. A queue that drains is explicitly
-zeroed rather than left pinned at its last reading — otherwise an alert would
-keep firing on an idle system. A DB error during collection is reported and
-swallowed, never raised: this collector shares the endpoint with the other
-groups, and failing the response would lose the Puma series too.
+queue, latency misses a large-but-moving one.
+
+**An idle system reads 0, not no-data.** A queue that drains is explicitly zeroed
+rather than left pinned at its last reading, and the zeroing starts from a
+baseline of every queue the app is known to use — discovered once per process
+from the jobs table, or pinned by the host:
+
+```ruby
+RailsPodKit::SolidQueue.install_metrics!(queues: %w[default mailers])
+```
+
+Without that baseline a process booting while the queue is empty — the steady
+state of a scale-to-zero deployment — would publish no series at all, since a
+gauge only exists once it has been set. Discovery is best-effort: the jobs table
+is bounded by `clear_finished_jobs_after`, so a queue idle for longer than the
+retention window leaves no trace in it. Pin `queues:` where the zero has to be
+guaranteed.
+
+**A collection error is always reported** (logged, plus handed to
+`Rails.error`), then either swallowed or raised:
+
+| | |
+|---|---|
+| `fail_scrape_on_error: false` (default) | serve the last reading. Right on an endpoint shared with the Puma or Sidekiq series, where failing the response would lose those too — at the cost of a stale gauge a consumer cannot tell apart from a live one. |
+| `fail_scrape_on_error: true` (`run_exporter!`'s default) | fail the scrape. Right on the dedicated pod, where there is nothing else to protect: the gauges go to no-data and the scrape failure shows up in the scraper's own `up` series. |
 
 ### The always-on pod
 
@@ -453,7 +473,15 @@ command: ["bin/solid-queue-pod"]
 ```
 
 Pass `scheduler: false` to serve the gauges only, on an app whose web process
-already hosts the scheduler. Keep the endpoint single-prefix (see
+already hosts the scheduler, and `metrics:` to override the gauge options (this
+endpoint is the collector's own, so `fail_scrape_on_error` defaults to `true`
+here):
+
+```ruby
+RailsPodKit::SolidQueue.run_exporter!(scheduler: false, metrics: { queues: %w[default mailers] })
+```
+
+Keep the endpoint single-prefix (see
 [One prefix per endpoint](#datadog-naming--the-canonical-metric-set)) — that pod
 serves `solid_queue_*` and nothing else, so the check config needs no filters.
 

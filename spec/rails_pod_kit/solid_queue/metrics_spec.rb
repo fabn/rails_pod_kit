@@ -15,14 +15,19 @@ RSpec.describe RailsPodKit::SolidQueue::Metrics do
   let(:ready_rows) { {} }
   let(:scheduled_rows) { {} }
   let(:published) { [] }
+  let(:known_queues) { [] }
 
   before do
     described_class.reset!
 
     stub_const('SolidQueue::ReadyExecution', Class.new { def self.all; end })
     stub_const('SolidQueue::ScheduledExecution', Class.new { def self.where(*); end })
+    stub_const('SolidQueue::Job', Class.new { def self.distinct; end })
     allow(SolidQueue::ReadyExecution).to receive(:all).and_return(ready)
     allow(SolidQueue::ScheduledExecution).to receive(:where).and_return(scheduled)
+    allow(SolidQueue::Job).to receive(:distinct).and_return(
+      instance_double(ActiveRecord::Relation, pluck: known_queues)
+    )
 
     allow(Time).to receive(:now).and_return(now)
     # Neither a real connection pool nor the global Yabeda registry belongs in a
@@ -101,17 +106,56 @@ RSpec.describe RailsPodKit::SolidQueue::Metrics do
     end
   end
 
+  context 'when the queue is empty' do
+    let(:known_queues) { %w[default mailers] }
+
+    it 'still publishes a zero for every queue the app is known to use' do
+      collect
+
+      expect(published).to contain_exactly(
+        { queue: 'default', backlog: 0, latency: 0 },
+        { queue: 'mailers', backlog: 0, latency: 0 }
+      )
+    end
+
+    it 'discovers that baseline once, not on every scrape' do
+      collect
+      collect
+
+      expect(SolidQueue::Job).to have_received(:distinct).once
+    end
+
+    it 'takes the baseline from the host when it pins one' do
+      allow(described_class).to receive(:declare!)
+      described_class.install!(queues: %w[critical])
+
+      collect
+
+      expect(published).to contain_exactly(queue: 'critical', backlog: 0, latency: 0)
+      expect(SolidQueue::Job).to_not have_received(:distinct)
+    end
+  end
+
   context 'when the database is unreachable' do
     before do
       allow(described_class).to receive(:with_connection).and_raise(ActiveRecord::ConnectionNotEstablished)
       allow(RailsPodKit::ErrorReporter).to receive(:report)
     end
 
-    it 'reports the error instead of failing the whole /metrics response' do
+    it 'reports the error instead of failing an endpoint it shares with other groups' do
       expect { collect }.to_not raise_error
 
       expect(RailsPodKit::ErrorReporter).to have_received(:report)
         .with(instance_of(ActiveRecord::ConnectionNotEstablished), source: described_class::SOURCE)
+    end
+
+    it 'fails the scrape when it owns the endpoint, so the gauges go to no-data' do
+      allow(described_class).to receive(:declare!)
+      described_class.install!(fail_scrape_on_error: true)
+
+      expect { collect }.to raise_error(ActiveRecord::ConnectionNotEstablished)
+
+      expect(RailsPodKit::ErrorReporter).to have_received(:report)
     end
   end
 end
