@@ -163,5 +163,15 @@ RSpec.describe RailsPodKit::SolidQueue::Metrics do
 
       expect(RailsPodKit::ErrorReporter).to have_received(:report)
     end
+
+    # The pod boots the host's initializers — and their install_metrics! — before
+    # run_exporter! gets to ask for this, so the second call has to be heard.
+    it 'still takes the option when the app declared the gauges first' do
+      allow(described_class).to receive(:declare!)
+      described_class.install!
+      described_class.install!(fail_scrape_on_error: true)
+
+      expect { collect }.to raise_error(ActiveRecord::ConnectionNotEstablished)
+    end
   end
 end

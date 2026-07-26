@@ -28,19 +28,25 @@ module RailsPodKit
       module_function
 
       # Declares the gauges and registers the scrape-time collector. Safe before
-      # or after `Yabeda.configure!` (yabeda replays configurators either way),
-      # and a no-op on a second call.
+      # or after `Yabeda.configure!` (yabeda replays configurators either way).
       #
       # `queues:` pins the zero baseline (see #baseline_queues) instead of
       # discovering it. `fail_scrape_on_error:` makes a collection failure fail
       # the whole response rather than serve the last reading — right when this
       # collector owns the endpoint, wrong when it shares one (see #collect!).
-      def install!(queues: nil, fail_scrape_on_error: false)
+      #
+      # Declaration is one-shot but the options are not: the dedicated pod boots
+      # the host's initializers before `run_exporter!` runs, so by the time the
+      # pod asks for `fail_scrape_on_error` the app's own `install_metrics!` has
+      # normally already declared the gauges. An option given here always wins;
+      # one left out keeps whatever an earlier call set.
+      def install!(queues: nil, fail_scrape_on_error: nil)
+        @baseline_queues = queues unless queues.nil?
+        @fail_scrape_on_error = fail_scrape_on_error unless fail_scrape_on_error.nil?
+
         return false if @installed
 
         require 'yabeda'
-        @baseline_queues = queues
-        @fail_scrape_on_error = fail_scrape_on_error
         declare!
         @installed = true
       end
