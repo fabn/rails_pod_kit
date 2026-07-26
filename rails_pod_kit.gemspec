@@ -7,13 +7,15 @@ Gem::Specification.new do |spec|
   spec.version     = RailsPodKit::VERSION
   spec.authors     = ['Fabio Napoleoni']
   spec.email       = ['f.napoleoni@gmail.com']
-  spec.summary     = 'Operational endpoints for Rails pods: Prometheus metrics (Puma + Sidekiq) and health checks'
+  spec.summary     = 'Operational endpoints for Rails pods: Prometheus metrics (Puma, Sidekiq, SolidQueue) and health checks'
   spec.description = <<~DESC
     Packages the yabeda ecosystem and health-monitor-rails into a single,
-    opinionated kit for running Rails applications on Kubernetes: Puma and
-    Sidekiq runtime metrics in Prometheus text format on an in-process /metrics
-    endpoint (default port 9394), plus a /healthz endpoint wired for
-    liveness/readiness/startup probes. No sidecar, no separate collector.
+    opinionated kit for running Rails applications on Kubernetes: Puma, Sidekiq
+    and SolidQueue runtime metrics in Prometheus text format on an in-process
+    /metrics endpoint (default port 9394), plus a /healthz endpoint wired for
+    liveness/readiness/startup probes. No sidecar, no separate collector. For
+    SolidQueue it also ships the supervised scheduler thread that lets the job
+    executor scale to zero.
   DESC
   spec.homepage = 'https://github.com/fabn/rails_pod_kit'
   spec.license  = 'MIT'
@@ -42,6 +44,10 @@ Gem::Specification.new do |spec|
   # Configuration backend: RAILS_POD_KIT_* env vars and optional YAML besides
   # the plain Ruby configure block.
   spec.add_dependency 'anyway_config', '~> 2.0'
+
+  # TimerTask, which supervises the SolidQueue scheduler thread. Always present
+  # transitively via ActiveSupport, but used directly here.
+  spec.add_dependency 'concurrent-ruby', '~> 1.2'
 
   # --- health checks ---
   # /healthz probe endpoint (Rails engine), wrapped by RailsPodKit::Health.

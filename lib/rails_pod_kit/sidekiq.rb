@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'rails_pod_kit/config'
+require 'rails_pod_kit/exporter'
 
 module RailsPodKit
   # Sidekiq integration. Called from inside `Sidekiq.configure_server`:
@@ -81,19 +82,11 @@ module RailsPodKit
       apply_retries_segmentation!
     end
 
-    # Starts the background WEBrick exporter. `start_metrics_server!` reads the
-    # bind port from PROMETHEUS_EXPORTER_PORT, so we set it from config first.
-    # Guarded so a re-entrant Sidekiq boot doesn't try to double-bind the port.
+    # Starts the background WEBrick exporter shared with the other non-Puma
+    # entry points; guarded there so a re-entrant Sidekiq boot can't double-bind
+    # the port.
     def start_metrics_server!
-      return if @server_started
-
-      ENV['PROMETHEUS_EXPORTER_PORT'] ||= RailsPodKit.config.port.to_s
-      # Drop the WEBrick exporter's per-scrape access log (Rack::CommonLogger,
-      # which the mmap exporter mounts unless this is exactly 'false'). See
-      # Config#silence_exporter_access_log.
-      ENV['PROMETHEUS_EXPORTER_LOG_REQUESTS'] = 'false' if RailsPodKit.config.silence_exporter_access_log
-      Yabeda::Prometheus::Exporter.start_metrics_server!
-      @server_started = true
+      RailsPodKit::Exporter.start!
     end
   end
 end

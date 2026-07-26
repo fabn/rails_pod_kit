@@ -13,22 +13,27 @@ require 'puma'
 require 'puma/plugin'
 require 'puma/plugin/yabeda'
 
-# Guards the "prefix-pure endpoint" invariant the Datadog OpenMetrics check
-# depends on (README "Invariant"): the :9394
-# endpoint must expose *only* yabeda-registered `puma_*` / `sidekiq_*` series.
+# The SolidQueue gauges are the gem's own (yabeda has no solid_queue plugin);
+# declaring them is enough — the collect block never runs here.
+require 'rails_pod_kit/solid_queue'
+
+# Guards the "group-prefixed endpoint" invariant the Datadog OpenMetrics check
+# depends on (README "Invariant"): the :9394 endpoint must expose *only*
+# yabeda-registered `puma_*` / `sidekiq_*` / `solid_queue_*` series.
 # `raw_metric_prefix` only strips the prefix, it does not filter, so any
 # unprefixed series leaking onto the endpoint would be ingested un-stripped under
 # the namespace (e.g. `puma.http_requests_total`).
 RSpec.describe 'rails_pod_kit /metrics endpoint invariant' do
-  # Only yabeda-registered puma_* / sidekiq_* series may appear on the endpoint.
-  let(:prefix_pure) { /\A(puma|sidekiq)_/ }
+  # Only yabeda-registered series in the kit's own groups may appear.
+  let(:prefix_pure) { /\A(puma|sidekiq|solid_queue)_/ }
+  let(:groups) { %i[puma sidekiq solid_queue] }
 
-  # Register the full Puma + Sidekiq metric set into the global Yabeda registry
-  # once, mirroring a real boot. Both yabeda-sidekiq flags are forced on so the
-  # per-process *and* the cluster gauges are declared (they default to
-  # `Sidekiq.server?`, which is false under the specs). Yabeda is a process-wide
-  # singleton configured at most once, so this guard makes it a no-op once a
-  # previous example (in this run) has already driven it.
+  # Register the full metric set into the global Yabeda registry once, mirroring
+  # a real boot. Both yabeda-sidekiq flags are forced on so the per-process *and*
+  # the cluster gauges are declared (they default to `Sidekiq.server?`, which is
+  # false under the specs). Yabeda is a process-wide singleton configured at most
+  # once, so this guard makes it a no-op once a previous example (in this run)
+  # has already driven it.
   before do
     unless Yabeda.already_configured?
       Yabeda::Sidekiq.config.declare_process_metrics = true
@@ -41,18 +46,20 @@ RSpec.describe 'rails_pod_kit /metrics endpoint invariant' do
       )
       puma_plugin.start(launcher)
 
+      RailsPodKit::SolidQueue.install_metrics!
+
       Yabeda.configure!
     end
   end
 
   describe 'registry level' do
-    it 'registers metrics only in the :puma and :sidekiq groups' do
+    it 'registers metrics only in the kit’s own groups' do
       expect(Yabeda.metrics).to_not be_empty
 
       aggregate_failures do
         Yabeda.metrics.each do |prometheus_name, metric|
-          expect(%i[puma sidekiq]).to include(metric.group),
-                                      "#{prometheus_name} is in unexpected group #{metric.group.inspect}"
+          expect(groups).to include(metric.group),
+                            "#{prometheus_name} is in unexpected group #{metric.group.inspect}"
           expect(prometheus_name).to match(prefix_pure)
         end
       end
@@ -88,7 +95,9 @@ RSpec.describe 'rails_pod_kit /metrics endpoint invariant' do
       write_sample_per_metric
     end
 
-    it 'serves only puma_* / sidekiq_* series' do
+    # One example, deliberately: prometheus-client-mmap memoizes its file
+    # handles, so a second scrape in a fresh multiprocess dir renders nothing.
+    it 'serves only puma_* / sidekiq_* / solid_queue_* series' do
       get '/metrics'
 
       expect(last_response).to be_ok
@@ -97,6 +106,9 @@ RSpec.describe 'rails_pod_kit /metrics endpoint invariant' do
 
       aggregate_failures do
         expect(names).to all(match(prefix_pure))
+        # The names the Datadog catalog and the dashboards are built on; `unit:`
+        # is what appends the `_seconds` suffix to the latency gauge.
+        expect(names).to include('solid_queue_backlog', 'solid_queue_latency_seconds')
       end
     end
 
