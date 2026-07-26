@@ -41,6 +41,12 @@ RSpec.describe RailsPodKit::SolidQueue::Metrics do
     stub_aggregates(scheduled, :scheduled_at, scheduled_rows)
   end
 
+  # The install latch is process-global, and the examples below flip it with
+  # `declare!` stubbed out. Left set, it would turn a later `install_metrics!`
+  # into a no-op and the gauges would never reach the registry — which is what
+  # the invariant spec's exposition example scrapes.
+  after { described_class.reset! }
+
   # A plain method, not a subject: the drain example scrapes twice and needs the
   # second call to actually happen.
   def collect
