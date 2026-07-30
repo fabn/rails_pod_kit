@@ -611,7 +611,7 @@ serves `solid_queue_*` and nothing else, so the check config needs no filters.
   localhost-only socket (`no_token: true`, never network-exposed).
 - **Rack version.** Under **Rack 3+** the mmap exporter's WEBrick handler also
   needs the `rackup` gem. Under Rack 2.x `webrick` alone is enough, but on
-  Ruby ≥ 3.5 make sure `ostruct` is in the bundle (Rack 2.2 requires it
+  Ruby ≥ 4.0 make sure `ostruct` is in the bundle (Rack 2.2 requires it
   without declaring it, and it's no longer a default gem).
 - **Two kinds of entry point.** The main file (`require 'rails_pod_kit'`,
   what Bundler.require loads in a Rails app) pulls in every integration

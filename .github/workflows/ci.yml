@@ -16,16 +16,18 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      # Edges instead of the full cross product: every Rails on the newest
-      # Ruby, plus the oldest supported Ruby on both Rack boundaries.
+      # Edges instead of the full cross product: every Rails on Ruby 3.4,
+      # every Ruby on the newest Rails, plus the oldest supported Ruby on both
+      # Rack boundaries. Ruby 4.0 is paired with Rails 8.1 only — the older
+      # Rails series predate it and make no claim to support it.
       matrix:
         include:
-          - { ruby: '3.4', rails: '7.1' }
+          - { ruby: '4.0', rails: '8.1' }
           - { ruby: '3.4', rails: '7.2' }
           - { ruby: '3.4', rails: '8.0' }
           - { ruby: '3.4', rails: '8.1' }
           - { ruby: '3.3', rails: '8.1' }
-          - { ruby: '3.3', rails: '7.1' }
+          - { ruby: '3.3', rails: '7.2' }
     env:
       BUNDLE_GEMFILE: gemfiles/rails_${{ matrix.rails }}.gemfile
     steps:

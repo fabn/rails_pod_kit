@@ -7,7 +7,7 @@ gemspec
 
 # Rails is pulled in transitively by health-monitor-rails, but declare it so the
 # Appraisal matrix can pin the version under test.
-gem 'rails', '>= 7.1'
+gem 'rails', '>= 7.2'
 
 # Host-provided runtime gems the isolated specs exercise, pinned so the local
 # suite and the /metrics harness run against the same stack a production host
@@ -18,7 +18,7 @@ gem 'sidekiq', '~> 7.3'
 # real app — the specs exercise the poller wiring against the real gem.
 gem 'sidekiq-cron', '~> 2.4'
 # Rack 2.2 requires 'ostruct' (rack/show_exceptions) but doesn't declare it;
-# since Ruby 3.5 ostruct is no longer a default gem, so it must be explicit.
+# since Ruby 4.0 ostruct is no longer a default gem, so it must be explicit.
 gem 'ostruct'
 
 # Appraisal drives the Rails/Rack test matrix; the concrete versions live in
