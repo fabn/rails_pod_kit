@@ -1,9 +1,7 @@
 # frozen_string_literal: true
 
-require 'concurrent'
-
 require 'rails_pod_kit/config'
-require 'rails_pod_kit/error_reporter'
+require 'rails_pod_kit/supervisor'
 
 module RailsPodKit
   # Runs the sidekiq-cron poller in a process that is *not* a Sidekiq server, so
@@ -30,15 +28,12 @@ module RailsPodKit
   # That fallback is only correct for entries declaring `active_job: true`, so
   # `start!` warns about any that would instead be pushed as bare Sidekiq jobs.
   #
-  # The poller runs under a `Concurrent::TimerTask` supervisor. Its own loop
-  # swallows StandardError (`Poller#enqueue` and `#wait` both do), so a Redis
-  # blip costs one skipped tick — but anything it does not catch takes the
-  # thread down and, since this process is the only scheduler, the schedule with
-  # it, silently. The supervisor turns that into a skipped tick too.
+  # The poller runs under the shared Supervisor, exactly like SolidQueue's
+  # scheduler thread. Its own loop swallows StandardError (`Poller#enqueue` and
+  # `#wait` both do), so a Redis blip costs one skipped tick — but anything it
+  # does not catch takes the thread down and, since this process is the only
+  # scheduler, the schedule with it, silently.
   module GlobalScheduler
-    # How often we check that the poller thread is still alive.
-    DEFAULT_SUPERVISION_INTERVAL = 30
-
     SOURCE = 'rails_pod_kit.global_scheduler'
 
     module_function
@@ -49,15 +44,17 @@ module RailsPodKit
     #
     # `schedule_file:`, `poll_interval:` and `reschedule_grace_period:` override
     # sidekiq-cron's own defaults (`config/schedule.yml`, resolved against the
-    # working directory, polled every 30s, catching up runs at most 60s late).
+    # working directory, polled every 30s, catching up runs at most 60s late);
+    # `supervision_interval:` is the shared Supervisor's.
     #
     # Raising the grace period is what makes a restart of the single scheduling
     # process free: below it a missed occurrence is caught up on the next poll,
     # above it the run is skipped silently. Size it over the worst restart —
     # eviction, reschedule, image pull, boot — not over the poll interval.
     def start!(schedule_file: nil, poll_interval: nil, reschedule_grace_period: nil,
-               supervision_interval: DEFAULT_SUPERVISION_INTERVAL)
+               supervision_interval: Supervisor::DEFAULT_INTERVAL)
       return @supervisor if @supervisor
+      return unless RailsPodKit.scheduler_enabled?('sidekiq-cron poller')
 
       require 'sidekiq'
       require 'sidekiq-cron'
@@ -69,39 +66,28 @@ module RailsPodKit
                  reschedule_grace_period: reschedule_grace_period)
       load_schedule!
 
-      @stopping = false
-      @supervisor = ::Concurrent::TimerTask.new(execution_interval: supervision_interval, run_now: true) { supervise }
-      @supervisor.execute
-      @supervisor
+      @supervisor = build_supervisor(supervision_interval).start
     end
 
-    # Graceful stop: drop the supervisor first so it can't resurrect the poller,
-    # then let an in-flight tick finish instead of being cut off mid-enqueue.
+    # Winds the poller down so an in-flight tick finishes before the process
+    # exits, instead of being cut off mid-enqueue by the signal.
     def stop!
-      @stopping = true
-      @supervisor&.shutdown
+      @supervisor&.stop
       @supervisor = nil
-      @poller&.terminate
-      @poller = nil
     end
 
     def poller
-      @poller
+      @supervisor&.subject
     end
 
-    # Concurrent::TimerTask silently drops a raising block, so report here and
-    # let the next tick retry.
-    def supervise
-      ensure_poller_running
-    rescue StandardError => e
-      ErrorReporter.report(e, source: SOURCE)
-    end
-
-    def ensure_poller_running
-      return if @stopping || poller_alive?
-
-      @poller = build_poller
-      @poller.start
+    def build_supervisor(interval)
+      Supervisor.new(
+        source: SOURCE,
+        interval: interval,
+        start: -> { build_poller.tap(&:start) },
+        alive: method(:poller_alive?),
+        stop: :terminate
+      )
     end
 
     # `Sidekiq::Scheduled::Poller` keeps its thread in `@thread` and `start` is a
@@ -110,11 +96,10 @@ module RailsPodKit
     # replace a dead poller wholesale — schedule state lives in Redis, so a fresh
     # one picks up exactly where the old one stopped. An unrecognised shape reads
     # as alive, so an upstream rename costs the supervision, never a restart loop.
-    def poller_alive?
-      return false unless @poller
-      return true unless @poller.instance_variable_defined?(:@thread)
+    def poller_alive?(poller)
+      return true unless poller.instance_variable_defined?(:@thread)
 
-      !!@poller.instance_variable_get(:@thread)&.alive?
+      !!poller.instance_variable_get(:@thread)&.alive?
     end
 
     def configure!(schedule_file: nil, poll_interval: nil, reschedule_grace_period: nil)

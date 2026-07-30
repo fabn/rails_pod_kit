@@ -50,10 +50,12 @@ module RailsPodKit
     #
     # Not gated on `RailsPodKit.enabled?` — that switch owns the metrics
     # exporter, and an app may well want the scheduler with metrics turned off.
-    # The guard against starting one in a console or in specs is *where* you
+    # `scheduler_enabled` is the switch that does own this (see Config); beyond
+    # it, the guard against starting one in a console or in specs is *where* you
     # call this from (`after_booted`, or the exporter entrypoint).
     def start_scheduler!(**)
       return scheduler_runner if scheduler_runner
+      return unless RailsPodKit.scheduler_enabled?('SolidQueue scheduler')
 
       @scheduler_runner = SchedulerRunner.new(**).start
     end

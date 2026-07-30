@@ -126,7 +126,7 @@ There are two distinct entry points, by design:
   `fail_scrape_on_error: true` (what `run_exporter!` passes on its own pod)
   turns it into a failed scrape, i.e. honest no-data.
   `SchedulerRunner` runs a scheduler-only `SolidQueue::Scheduler` in a thread
-  supervised by a `Concurrent::TimerTask` — deliberately *not* the full
+  supervised by the shared `Supervisor` — deliberately *not* the full
   supervisor, whose Puma watchdog takes the host process down on a DB blip
   (rails/solid_queue#512). `run_exporter!` combines both into the always-on
   1-replica pod; unlike GlobalExporter it needs the host's ActiveRecord models,
@@ -152,9 +152,18 @@ There are two distinct entry points, by design:
   `active_job: true` requirement on every entry, which `start!` warns about. It
   also loads the schedule file itself (sidekiq-cron does that from a Sidekiq
   server's `:startup` event) and requires `erb`, which sidekiq-cron uses without
-  requiring. Supervised by a `Concurrent::TimerTask`, same shape as
-  `SchedulerRunner`, because a dead poller on the only scheduling process is a
-  silently stopped schedule.
+  requiring. Supervised by the shared `Supervisor`, because a dead poller on the
+  only scheduling process is a silently stopped schedule.
+- **`RailsPodKit::Supervisor`** (`lib/rails_pod_kit/supervisor.rb`) — the
+  keep-the-background-thread-alive timer both schedulers run under: immediate
+  first tick, a `@stopping` latch so a shutdown cannot be undone by a tick
+  already in flight, and `ErrorReporter` instead of dying (a
+  `Concurrent::TimerTask` silently drops a raising block). The three things that
+  differ per worker are injected — `start:` (a callable returning the started
+  worker), `alive:` and `stop:` (a method name to send the worker, or a callable
+  taking it). `alive:` accepts a callable precisely for `GlobalScheduler`:
+  `Sidekiq::Scheduled::Poller` exposes no liveness of its own, so the check has
+  to peek at `@thread`. Railties-free, since one of its two users is.
 - **`RailsPodKit::Shutdown`** (`lib/rails_pod_kit/shutdown.rb`) — the
   block-until-SIGTERM self-pipe shared by the always-on entry points.
 

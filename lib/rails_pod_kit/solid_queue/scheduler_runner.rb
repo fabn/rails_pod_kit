@@ -1,11 +1,10 @@
 # frozen_string_literal: true
 
-require 'concurrent'
 require 'active_support/configuration_file'
 require 'active_support/core_ext/hash/keys'
 
 require 'rails_pod_kit/config'
-require 'rails_pod_kit/error_reporter'
+require 'rails_pod_kit/supervisor'
 
 module RailsPodKit
   module SolidQueue
@@ -44,51 +43,40 @@ module RailsPodKit
         @polling_interval = polling_interval
         @supervision_interval = supervision_interval
         @recurring_schedule_file = recurring_schedule_file
-        @stopping = false
       end
 
       # Starts the supervisor, which starts the scheduler on its first (immediate)
       # tick and returns without blocking.
       def start
-        @supervisor = ::Concurrent::TimerTask.new(
-          execution_interval: @supervision_interval,
-          run_now: true
-        ) { supervise }
-        @supervisor.execute
+        @supervisor = build_supervisor.start
         self
       end
 
-      # Graceful stop: drop the supervisor first so it can't resurrect the
-      # scheduler, then wind the scheduler down (unschedule its timers and
-      # deregister the process, instead of leaving a row to expire).
+      # Graceful stop: the supervisor drops its timer before winding the
+      # scheduler down (unschedule its timers and deregister the process,
+      # instead of leaving a row to expire).
       def stop
-        @stopping = true
-        @supervisor&.shutdown
+        @supervisor&.stop
         @supervisor = nil
-        @scheduler&.stop
-        @scheduler = nil
       end
 
       def running?
-        !!@scheduler&.alive?
+        !!@supervisor&.running?
       end
 
       private
 
-      # Concurrent::TimerTask silently drops a raising block, so report here and
-      # let the next tick retry — a scheduler that can't start because Postgres
-      # is down must keep trying.
-      def supervise
-        ensure_scheduler_running
-      rescue StandardError => e
-        ErrorReporter.report(e, source: SOURCE)
+      def build_supervisor
+        Supervisor.new(
+          source: SOURCE,
+          interval: @supervision_interval,
+          start: -> { build_scheduler },
+          alive: :alive?,
+          stop: :stop
+        )
       end
 
-      # Idempotent: starts the scheduler on the first tick, and restarts it only
-      # once its thread has actually died.
-      def ensure_scheduler_running
-        return if @stopping || @scheduler&.alive?
-
+      def build_scheduler
         scheduler = ::SolidQueue::Scheduler.new(
           recurring_tasks: static_recurring_tasks,
           dynamic_tasks_enabled: true,
@@ -96,7 +84,7 @@ module RailsPodKit
         )
         scheduler.mode = :async
         scheduler.start # spawns the scheduler's own thread and returns
-        @scheduler = scheduler
+        scheduler
       end
 
       # The static tasks from config/recurring.yml; the dynamic ones come from

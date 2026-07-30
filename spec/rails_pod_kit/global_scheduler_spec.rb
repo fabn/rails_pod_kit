@@ -30,18 +30,10 @@ RSpec.describe RailsPodKit::GlobalScheduler do
   describe '.start!' do
     before { allow(described_class).to receive_messages(load_schedule!: nil, build_poller: poller) }
 
-    it 'starts the cron poller from the supervisor tick' do
-      described_class.start!
-      tick
-
-      expect(poller).to have_received(:start)
-      expect(described_class.poller).to eq(poller)
-    end
-
     it 'supervises from the first tick, without waiting out an interval' do
       described_class.start!
 
-      expect(supervisor[:options]).to include(run_now: true, execution_interval: described_class::DEFAULT_SUPERVISION_INTERVAL)
+      expect(supervisor[:options]).to include(run_now: true, execution_interval: RailsPodKit::Supervisor::DEFAULT_INTERVAL)
       expect(timer).to have_received(:execute)
     end
 
@@ -88,30 +80,20 @@ RSpec.describe RailsPodKit::GlobalScheduler do
     end
   end
 
-  describe 'supervision' do
+  # The generic restart/report/stop semantics belong to Supervisor and are
+  # covered by its own spec; what matters here is that the right hooks reach it.
+  describe 'supervision wiring' do
     before { allow(described_class).to receive_messages(load_schedule!: nil, build_poller: poller) }
 
-    it 'leaves a live poller alone' do
+    it 'hands the supervisor a poller that is already started' do
       described_class.start!
       tick
-      allow(described_class).to receive(:poller_alive?).and_return(true)
 
-      tick
-
-      expect(poller).to have_received(:start).once
+      expect(poller).to have_received(:start)
+      expect(described_class.poller).to eq(poller)
     end
 
-    it 'replaces a poller whose thread has died' do
-      described_class.start!
-      tick
-      allow(described_class).to receive(:poller_alive?).and_return(false)
-
-      tick
-
-      expect(poller).to have_received(:start).twice
-    end
-
-    it 'reports a poller that cannot start, and retries on the next tick' do
+    it 'reports through the scheduler-specific source' do
       error = StandardError.new('redis is down')
       allow(described_class).to receive(:build_poller).and_raise(error)
       allow(RailsPodKit::ErrorReporter).to receive(:report)
@@ -120,38 +102,38 @@ RSpec.describe RailsPodKit::GlobalScheduler do
       expect { tick }.to_not raise_error
       expect(RailsPodKit::ErrorReporter).to have_received(:report).with(error, source: described_class::SOURCE)
     end
-
-    it 'does not resurrect the poller once stopped' do
-      described_class.start!
-      tick
-      described_class.stop!
-
-      tick
-
-      expect(poller).to have_received(:start).once
-    end
   end
 
   describe '.poller_alive?' do
-    it 'is false before anything is started' do
-      expect(described_class.poller_alive?).to be(false)
-    end
-
-    it 'follows the poller thread once started' do
-      allow(described_class).to receive_messages(load_schedule!: nil, build_poller: poller)
-      described_class.start!
-      tick
+    it 'follows the poller thread' do
       poller.instance_variable_set(:@thread, instance_double(Thread, alive?: false))
 
-      expect(described_class.poller_alive?).to be(false)
+      expect(described_class.poller_alive?(poller)).to be(false)
     end
 
     it 'assumes alive when the poller does not expose a thread ivar' do
-      allow(described_class).to receive_messages(load_schedule!: nil, build_poller: poller)
-      described_class.start!
-      tick
+      expect(described_class.poller_alive?(poller)).to be(true)
+    end
+  end
 
-      expect(described_class.poller_alive?).to be(true)
+  describe 'the scheduler kill switch' do
+    before do
+      allow(described_class).to receive_messages(load_schedule!: nil, build_poller: poller)
+      RailsPodKit.configure { |c| c.scheduler_enabled = false }
+    end
+
+    it 'does not start a poller' do
+      expect(Concurrent::TimerTask).to_not receive(:new)
+
+      described_class.start!
+    end
+
+    it 'says so, rather than leaving a process that quietly schedules nothing' do
+      allow(RailsPodKit).to receive(:warn)
+
+      described_class.start!
+
+      expect(RailsPodKit).to have_received(:warn).with(/scheduler_enabled=false/)
     end
   end
 

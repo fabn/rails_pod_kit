@@ -88,7 +88,8 @@ no initializers.
 
 | setting | default | meaning |
 |---------|---------|---------|
-| `enabled` | on, except in `test` | master switch; `false` ⇒ no exporter, no port bound |
+| `enabled` | on, except in `test` | master switch for the **exporter**; `false` ⇒ no exporter, no port bound |
+| `scheduler_enabled` | on, everywhere | kill switch for the **hosted schedulers** (sidekiq-cron poller, SolidQueue scheduler thread). Separate from `enabled` — an app may want one without the other, and this is the one you may need to flip in a hurry, since the scheduler is a single point of failure for the whole schedule. On even in `test`: nothing starts a scheduler implicitly, so there is no port to protect, and a switch that failed closed on a typo would silently stop a schedule. Turning it off logs a warning naming the scheduler that did not start. |
 | `port` | `9394` (env `PROMETHEUS_EXPORTER_PORT`) | exporter bind port for Puma **and** Sidekiq |
 | `sidekiq_global_metrics` | `:web` | who exports the Redis-wide queue metrics: `:web` = only the always-on web process (no per-worker duplication); `:all` = every worker; `:off` = nobody |
 | `puma_control_url` | `tcp://127.0.0.1:9293` (env `PUMA_CONTROL_URL`) | localhost-only Puma control app the stats reader queries |
@@ -394,10 +395,12 @@ other than the exporter.
 > every metric series the pod publishes, and a `PodDisruptionBudget` on a
 > single-replica Deployment stalls node drains rather than protecting anything.
 
-The poller runs under a supervising timer. Its own loop swallows StandardError,
-so a Redis blip costs one skipped tick — but anything it does not catch would
-take the thread down and, on the only process carrying the schedule, silently
-take the schedule with it. The supervisor makes that a skipped tick too.
+The poller runs under `RailsPodKit::Supervisor` — the same supervising timer
+that keeps the SolidQueue scheduler thread alive, since both share the failure
+mode: the thread dies, the host process notices nothing, and the schedule stops
+silently. The cron poller's own loop swallows StandardError, so a Redis blip
+costs one skipped tick; the supervisor makes anything it does *not* catch a
+skipped tick too.
 
 > **Every schedule entry must declare `active_job: true`.** This process has no
 > Rails, so it cannot resolve the job classes; sidekiq-cron then falls back to
@@ -444,10 +447,11 @@ This is deliberately **not** `plugin :solid_queue`. That one runs the full
 supervisor, which forks and whose watchdog takes Puma down when the supervisor
 exits — and a transient Postgres disconnect is enough to cause that
 ([rails/solid_queue#512](https://github.com/rails/solid_queue/issues/512)). Here
-a DB blip at worst kills the scheduler thread; a `Concurrent::TimerTask` (the
-same primitive SolidQueue supervises its own processes with) notices on the next
-tick and starts a fresh one, the process itself never notices, and the scheduler
-re-registers on recovery.
+a DB blip at worst kills the scheduler thread; `RailsPodKit::Supervisor` — a
+`Concurrent::TimerTask`, the same primitive SolidQueue supervises its own
+processes with, and the same one that keeps the sidekiq-cron poller alive —
+notices on the next tick and starts a fresh one, the process itself never
+notices, and the scheduler re-registers on recovery.
 
 Running it on every replica is safe: enqueues stay exactly-once via the unique
 index on `solid_queue_recurring_executions (task_key, run_at)`. Static tasks come
@@ -461,8 +465,10 @@ ones from the DB.
 | `recurring_schedule_file` | `config/recurring.yml` | static task definitions; skipped when absent |
 
 `start_scheduler!` is **not** gated on `enabled` — that switch owns the metrics
-exporter, and an app may well want the scheduler with metrics off. What keeps it
-out of consoles and specs is *where* you call it from.
+exporter, and an app may well want the scheduler with metrics off.
+`scheduler_enabled` is the switch that does own it, shared with the sidekiq-cron
+poller. Beyond that, what keeps it out of consoles and specs is *where* you call
+it from.
 
 ### 2. Queue depth has to be visible
 
