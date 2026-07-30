@@ -52,11 +52,12 @@ RSpec.describe RailsPodKit::GlobalScheduler do
       expect(Concurrent::TimerTask).to have_received(:new).once
     end
 
-    it 'applies the schedule file and poll interval overrides' do
-      described_class.start!(schedule_file: 'config/cron.yml', poll_interval: 5)
+    it 'applies the sidekiq-cron overrides' do
+      described_class.start!(schedule_file: 'config/cron.yml', poll_interval: 5, reschedule_grace_period: 900)
 
       expect(Sidekiq::Cron.configuration.cron_schedule_file).to eq('config/cron.yml')
       expect(Sidekiq::Cron.configuration.cron_poll_interval).to eq(5)
+      expect(Sidekiq::Cron.configuration.reschedule_grace_period).to eq(900)
     end
 
     it 'leaves sidekiq-cron defaults alone when nothing is overridden' do
@@ -64,6 +65,7 @@ RSpec.describe RailsPodKit::GlobalScheduler do
 
       expect(Sidekiq::Cron.configuration.cron_schedule_file).to eq('config/schedule.yml')
       expect(Sidekiq::Cron.configuration.cron_poll_interval).to eq(30)
+      expect(Sidekiq::Cron.configuration.reschedule_grace_period).to eq(60)
     end
   end
 

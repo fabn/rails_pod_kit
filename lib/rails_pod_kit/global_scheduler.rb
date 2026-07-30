@@ -47,10 +47,16 @@ module RailsPodKit
     # its first (immediate) tick, then returns without blocking. Idempotent: a
     # second call is a no-op rather than a second poller in the same process.
     #
-    # `schedule_file:` and `poll_interval:` override sidekiq-cron's own defaults
-    # (`config/schedule.yml`, resolved against the working directory, polled
-    # every 30s).
-    def start!(schedule_file: nil, poll_interval: nil, supervision_interval: DEFAULT_SUPERVISION_INTERVAL)
+    # `schedule_file:`, `poll_interval:` and `reschedule_grace_period:` override
+    # sidekiq-cron's own defaults (`config/schedule.yml`, resolved against the
+    # working directory, polled every 30s, catching up runs at most 60s late).
+    #
+    # Raising the grace period is what makes a restart of the single scheduling
+    # process free: below it a missed occurrence is caught up on the next poll,
+    # above it the run is skipped silently. Size it over the worst restart —
+    # eviction, reschedule, image pull, boot — not over the poll interval.
+    def start!(schedule_file: nil, poll_interval: nil, reschedule_grace_period: nil,
+               supervision_interval: DEFAULT_SUPERVISION_INTERVAL)
       return @supervisor if @supervisor
 
       require 'sidekiq'
@@ -59,7 +65,8 @@ module RailsPodKit
       # under Rails it is always already loaded, here it is not.
       require 'erb'
 
-      configure!(schedule_file: schedule_file, poll_interval: poll_interval)
+      configure!(schedule_file: schedule_file, poll_interval: poll_interval,
+                 reschedule_grace_period: reschedule_grace_period)
       load_schedule!
 
       @stopping = false
@@ -110,10 +117,11 @@ module RailsPodKit
       !!@poller.instance_variable_get(:@thread)&.alive?
     end
 
-    def configure!(schedule_file: nil, poll_interval: nil)
+    def configure!(schedule_file: nil, poll_interval: nil, reschedule_grace_period: nil)
       ::Sidekiq::Cron.configure do |cron|
         cron.cron_schedule_file = schedule_file if schedule_file
         cron.cron_poll_interval = poll_interval if poll_interval
+        cron.reschedule_grace_period = reschedule_grace_period if reschedule_grace_period
       end
     end
 

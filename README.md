@@ -374,11 +374,25 @@ RailsPodKit::GlobalExporter.run!(
 )
 ```
 
-`schedule_file:` and `poll_interval:` override sidekiq-cron's defaults
-(`config/schedule.yml` resolved against the working directory, polled every 30s);
+`schedule_file:`, `poll_interval:` and `reschedule_grace_period:` override
+sidekiq-cron's defaults (`config/schedule.yml` resolved against the working
+directory, polled every 30s, catching up runs at most 60s late);
 `supervision_interval:` tunes the liveness check. `RailsPodKit::GlobalScheduler`
 is usable on its own (`start!` / `stop!`) if the always-on process is something
 other than the exporter.
+
+> **Size `reschedule_grace_period` over your worst restart.** It is what makes
+> restarting the *only* scheduling process free: below it a missed occurrence is
+> caught up on the next poll, above it the run is skipped silently. sidekiq-cron
+> defaults to 60s, which a node drain or an evicted pod can easily exceed —
+> rolling updates are covered anyway, since a `maxSurge` overlap means there is
+> no gap at all. Catching up is bounded, not repeated: `last_enqueue_time` in
+> Redis still gates each occurrence to exactly one enqueue.
+>
+> This is the reason a singleton scheduler does **not** need to become an HA
+> pair. A second replica is safe for the poller (same `zadd` lock) but doubles
+> every metric series the pod publishes, and a `PodDisruptionBudget` on a
+> single-replica Deployment stalls node drains rather than protecting anything.
 
 The poller runs under a supervising timer. Its own loop swallows StandardError,
 so a Redis blip costs one skipped tick — but anything it does not catch would
