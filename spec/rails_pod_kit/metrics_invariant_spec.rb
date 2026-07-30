@@ -111,7 +111,8 @@ RSpec.describe 'rails_pod_kit /metrics endpoint invariant' do
         expect(names).to all(match(prefix_pure))
         # The names the Datadog catalog and the dashboards are built on; `unit:`
         # is what appends the `_seconds` suffix to the latency gauge.
-        expect(names).to include('solid_queue_backlog', 'solid_queue_latency_seconds')
+        expect(names).to include('solid_queue_backlog', 'solid_queue_latency_seconds',
+                                 'sidekiq_cron_poll_age_seconds')
       end
     end
 

@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require 'rails_pod_kit/global_scheduler/heartbeat'
-require 'yabeda'
 
 RSpec.describe RailsPodKit::GlobalScheduler::Heartbeat do
   after { described_class.stop! }
@@ -57,16 +56,12 @@ RSpec.describe RailsPodKit::GlobalScheduler::Heartbeat do
     end
   end
 
+  # Declaring is asserted in the metrics invariant spec, not here: `Yabeda` is a
+  # process-wide singleton that may be configured at most once, so the spec that
+  # drives `Yabeda.configure!` owns that assertion. Calling it from a second file
+  # makes the suite order-dependent — whichever file gets there first decides
+  # which metrics the whole run has.
   describe '.install!' do
-    it 'declares the gauge in the sidekiq group' do
-      described_class.install!
-      Yabeda.configure! unless Yabeda.already_configured?
-
-      # The registry key carries no unit — the `_seconds` suffix on the exposed
-      # series is the Prometheus adapter's doing (see the invariant spec).
-      expect(Yabeda.metrics).to include('sidekiq_cron_poll_age')
-    end
-
     it 'is one-shot' do
       described_class.install!
 
