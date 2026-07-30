@@ -7,7 +7,7 @@ gemspec
 
 # Rails is pulled in transitively by health-monitor-rails, but declare it so the
 # Appraisal matrix can pin the version under test.
-gem 'rails', '>= 7.1'
+gem 'rails', '>= 7.2'
 
 # Host-provided runtime gems the isolated specs exercise, pinned so the local
 # suite and the /metrics harness run against the same stack a production host
