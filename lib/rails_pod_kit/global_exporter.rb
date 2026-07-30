@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require 'rails_pod_kit/config'
+require 'rails_pod_kit/global_scheduler'
+require 'rails_pod_kit/shutdown'
 
 module RailsPodKit
   # Standalone, always-on exporter for the Sidekiq global (Redis-wide) queue
@@ -26,6 +28,10 @@ module RailsPodKit
   #   require 'bundler/setup'
   #   require 'rails_pod_kit/global_exporter'
   #   RailsPodKit::GlobalExporter.run!(redis: { url: ENV['REDIS_URL'] })
+  #
+  # Being an always-on singleton also makes it the natural host for the
+  # sidekiq-cron poller (`scheduler: true`, see GlobalScheduler), which is what
+  # lets the workers scale to zero without losing their schedule.
   module GlobalExporter
     module_function
 
@@ -47,22 +53,34 @@ module RailsPodKit
     # `redis:` takes the same options hash the host passes to its own
     # `Sidekiq.configure_*` blocks (`url:`, `ssl_params:`, …), so the connection
     # config stays a host decision with a single source of truth.
-    def run!(redis:)
-      unless RailsPodKit.enabled?
-        warn '[rails_pod_kit] disabled — global exporter not started'
-        return
-      end
+    #
+    # `scheduler: true` additionally runs the sidekiq-cron poller here; any
+    # extra keywords are GlobalScheduler.start!'s (`schedule_file:`,
+    # `poll_interval:`, `supervision_interval:`). The scheduler is not gated on
+    # `RailsPodKit.enabled?` —
+    # that switch owns the metrics exporter, and an app may well want the
+    # singleton scheduler with metrics turned off.
+    def run!(redis:, scheduler: false, **scheduler_options)
+      serve_metrics = RailsPodKit.enabled?
+      warn '[rails_pod_kit] disabled — /metrics not served by the global exporter' unless serve_metrics
+      return unless serve_metrics || scheduler
 
       configure_redis!(redis)
+      start_metrics! if serve_metrics
+      GlobalScheduler.start!(**scheduler_options) if scheduler
+
+      # Both the exporter and the poller serve from background threads; block
+      # the main thread so the process stays up until the kubelet sends SIGTERM.
+      Shutdown.await
+      GlobalScheduler.stop! if scheduler
+    end
+
+    def start_metrics!
       install!
       RailsPodKit::Sidekiq.start_metrics_server!
 
       require 'yabeda'
       Yabeda.configure! unless Yabeda.already_configured?
-
-      # The exporter serves from a background thread; block the main thread so
-      # the process stays up until the kubelet sends SIGTERM.
-      sleep
     end
 
     # Configure the Sidekiq client's Redis connection so this Rails-free process
