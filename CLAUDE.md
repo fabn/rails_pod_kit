@@ -51,10 +51,13 @@ bundle exec rake                         # Run both rspec and rubocop (default t
 
 The specs run **in isolation** — they do not boot a host Rails app, and there is
 no database. Every metrics hook is a complete no-op when the exporter is disabled
-or in the `test` environment, so the suite never binds port `9394`. The
-SolidQueue scheduler is the one piece not gated on that switch (it is not an
-exporter); it stays out of the suite because nothing calls it — in a host app it
-is started from Puma's `after_booted`.
+or in the `test` environment, so the suite never binds port `9394`.
+
+The two schedulers are not gated on that switch (they are not exporters —
+`scheduler_enabled` is theirs, and it stays on in `test`). What keeps them
+harmless in the suite is that neither spawns a real thread there: the specs stub
+`Concurrent::TimerTask.new` and drive the supervisor tick by hand, so nothing
+ever polls Redis or touches a database.
 
 ### CI Matrix
 

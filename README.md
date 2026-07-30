@@ -82,7 +82,8 @@ On a SolidQueue stack there is no step 3 — see
 config: besides the `RailsPodKit.configure` block (which runs last and wins),
 every setting can come from a `RAILS_POD_KIT_*` env var (e.g.
 `RAILS_POD_KIT_ENABLED=false`, `RAILS_POD_KIT_PORT=9500`,
-`RAILS_POD_KIT_SIDEKIQ_GLOBAL_METRICS=off`) or an optional
+`RAILS_POD_KIT_SIDEKIQ_GLOBAL_METRICS=off`,
+`RAILS_POD_KIT_SCHEDULER_ENABLED=false`) or an optional
 `config/rails_pod_kit.yml` — handy for the Rails-free exporter pod, which runs
 no initializers.
 
