@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'rails_pod_kit/config'
+require 'rails_pod_kit/global_scheduler/heartbeat'
 require 'rails_pod_kit/supervisor'
 
 module RailsPodKit
@@ -66,6 +67,8 @@ module RailsPodKit
                  reschedule_grace_period: reschedule_grace_period)
       load_schedule!
 
+      Heartbeat.install!
+      Heartbeat.start!
       @supervisor = build_supervisor(supervision_interval).start
     end
 
@@ -74,6 +77,7 @@ module RailsPodKit
     def stop!
       @supervisor&.stop
       @supervisor = nil
+      Heartbeat.stop!
     end
 
     def poller
@@ -132,7 +136,25 @@ module RailsPodKit
       config[:cron_poll_interval] = ::Sidekiq::Cron.configuration.cron_poll_interval.to_i
       config[:cron_poll_process_count] = ::Sidekiq::Cron.configuration.cron_poll_process_count || 1
 
-      ::Sidekiq::Cron::Poller.new(config)
+      poller_class.new(config)
+    end
+
+    # A subclass rather than a prepended module, so the heartbeat hook is
+    # confined to the poller this module builds and never touches sidekiq-cron's
+    # own for a host that also runs a Sidekiq server. Built lazily because the
+    # superclass does not exist until `sidekiq-cron` is required.
+    #
+    # Records only on a normal return: `Poller#enqueue` rescues internally, so
+    # anything that still escapes it means the tick did not complete, and
+    # counting it as a heartbeat would be exactly the lie the gauge exists to
+    # prevent.
+    def poller_class
+      @poller_class ||= Class.new(::Sidekiq::Cron::Poller) do
+        def enqueue
+          super
+          Heartbeat.record!
+        end
+      end
     end
 
     # An entry whose class this process cannot load and which does not declare

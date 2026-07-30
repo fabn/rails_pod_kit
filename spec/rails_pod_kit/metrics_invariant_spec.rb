@@ -13,9 +13,11 @@ require 'puma'
 require 'puma/plugin'
 require 'puma/plugin/yabeda'
 
-# The SolidQueue gauges are the gem's own (yabeda has no solid_queue plugin);
-# declaring them is enough — the collect block never runs here.
+# The SolidQueue gauges and the sidekiq-cron heartbeat are the gem's own (yabeda
+# has no solid_queue plugin, and the heartbeat is not a sidekiq-cron concept);
+# declaring them is enough — the collect blocks never run here.
 require 'rails_pod_kit/solid_queue'
+require 'rails_pod_kit/global_scheduler/heartbeat'
 
 # Guards the "group-prefixed endpoint" invariant the Datadog OpenMetrics check
 # depends on (README "Invariant"): the :9394 endpoint must expose *only*
@@ -47,6 +49,7 @@ RSpec.describe 'rails_pod_kit /metrics endpoint invariant' do
       puma_plugin.start(launcher)
 
       RailsPodKit::SolidQueue.install_metrics!
+      RailsPodKit::GlobalScheduler::Heartbeat.install!
 
       Yabeda.configure!
     end

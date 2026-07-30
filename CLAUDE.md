@@ -157,6 +157,16 @@ There are two distinct entry points, by design:
   server's `:startup` event) and requires `erb`, which sidekiq-cron uses without
   requiring. Supervised by the shared `Supervisor`, because a dead poller on the
   only scheduling process is a silently stopped schedule.
+- **`RailsPodKit::GlobalScheduler::Heartbeat`**
+  (`lib/rails_pod_kit/global_scheduler/heartbeat.rb`) — publishes
+  `sidekiq_cron_poll_age_seconds`, the age of the last completed poller tick,
+  recorded by a `Sidekiq::Cron::Poller` subclass `build_poller` instantiates (a
+  subclass, not a prepended module, so a host that also runs a Sidekiq server
+  keeps sidekiq-cron's own poller untouched). Covers the one failure the
+  Supervisor and the probe both miss: a poller running but no longer
+  enqueueing, which from outside looks exactly like an idle one. Monotonic, and
+  measured from `start!` until the first tick so a poller that never ran reads
+  as climbing rather than as no-data.
 - **`RailsPodKit::Supervisor`** (`lib/rails_pod_kit/supervisor.rb`) — the
   keep-the-background-thread-alive timer both schedulers run under: immediate
   first tick, a `@stopping` latch so a shutdown cannot be undone by a tick
@@ -212,6 +222,7 @@ reads it, and the gemspec reads that. The release flow is fully automated:
 
 ```
 lib/rails_pod_kit/         # the gem (global_exporter + global_scheduler = the always-on singleton pod)
+lib/rails_pod_kit/global_scheduler/  # the cron poll heartbeat gauge
 lib/rails_pod_kit/solid_queue/  # queue gauges + supervised scheduler thread
 spec/rails_pod_kit/        # isolated unit specs + the metrics invariant spec
 Appraisals                 # Rails/Rack test matrix definitions
