@@ -63,7 +63,9 @@ ever polls Redis or touches a database.
 
 Tests run against a reduced matrix of Ruby x Rails/Rack via
 [Appraisal](https://github.com/thoughtbot/appraisal). The gem requires Ruby
-`>= 3.3`. The interesting axis besides Rails is **Rack**: the
+`>= 3.3`, and the matrix runs 3.3/3.4/4.0 — Ruby 4.0 against Rails 8.1 only,
+since the older Rails series predate it. The interesting axis besides Rails is
+**Rack**: the
 `yabeda-prometheus-mmap` exporter mounts a WEBrick Rack handler that lives in
 `webrick` under Rack 2.x but was extracted into the `rackup` gem under Rack 3+.
 Rails 7.2 is exercised against Rack 2.2, Rails 8.x against Rack 3.

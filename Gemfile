@@ -18,7 +18,7 @@ gem 'sidekiq', '~> 7.3'
 # real app — the specs exercise the poller wiring against the real gem.
 gem 'sidekiq-cron', '~> 2.4'
 # Rack 2.2 requires 'ostruct' (rack/show_exceptions) but doesn't declare it;
-# since Ruby 3.5 ostruct is no longer a default gem, so it must be explicit.
+# since Ruby 4.0 ostruct is no longer a default gem, so it must be explicit.
 gem 'ostruct'
 
 # Appraisal drives the Rails/Rack test matrix; the concrete versions live in
