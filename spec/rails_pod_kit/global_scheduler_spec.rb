@@ -137,6 +137,26 @@ RSpec.describe RailsPodKit::GlobalScheduler do
     end
   end
 
+  describe '.poller_class' do
+    # The built poller is what records the heartbeat; the specs elsewhere stub
+    # build_poller, so this is the only place the hook itself runs.
+    it 'records a heartbeat when a tick completes' do
+      allow(Sidekiq::Cron::Job).to receive(:all).and_return([])
+      allow(RailsPodKit::GlobalScheduler::Heartbeat).to receive(:record!)
+
+      described_class.poller_class.new(Sidekiq.default_configuration).enqueue
+
+      expect(RailsPodKit::GlobalScheduler::Heartbeat).to have_received(:record!)
+    end
+
+    it 'subclasses sidekiq-cron rather than patching it globally' do
+      built = described_class.poller_class
+
+      expect(built.superclass).to eq(Sidekiq::Cron::Poller)
+      expect(described_class.poller_class).to equal(built)
+    end
+  end
+
   describe '.build_poller' do
     it 'publishes the cron poll settings the poller reads back out of the Sidekiq config' do
       Sidekiq::Cron.configure { |cron| cron.cron_poll_interval = 7 }
