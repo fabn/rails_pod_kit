@@ -159,6 +159,8 @@ endpoint every few seconds); pass `silence_controller_log: false` to keep it.
   `sidekiq_queue_latency`, `sidekiq_active_processes`,
   `sidekiq_active_workers_count`, `sidekiq_jobs_retry_count`,
   `sidekiq_jobs_dead_count`, `sidekiq_jobs_scheduled_count`.
+- **Sidekiq (cron scheduler):** `sidekiq_cron_poll_age_seconds`, on the process
+  hosting the poller (see GlobalScheduler).
 - **SolidQueue (DB-wide):** `solid_queue_backlog`,
   `solid_queue_latency_seconds`.
 
@@ -275,6 +277,12 @@ Sidekiq job class.
 | `sidekiq.jobs_dead_count` | — |
 | `sidekiq.active_processes` | — |
 | `sidekiq.active_workers_count` | — |
+
+**Sidekiq — cron scheduler** (only the process hosting the poller, `namespace: sidekiq`):
+
+| canonical Datadog metric | functional tags |
+|---|---|
+| `sidekiq.cron_poll_age_seconds` | — |
 
 **Sidekiq — per-process / job** (worker pod, `namespace: sidekiq`; emitted on job activity):
 
@@ -402,6 +410,32 @@ mode: the thread dies, the host process notices nothing, and the schedule stops
 silently. The cron poller's own loop swallows StandardError, so a Redis blip
 costs one skipped tick; the supervisor makes anything it does *not* catch a
 skipped tick too.
+
+### The heartbeat
+
+The supervisor covers a poller thread that *dies*. It cannot see one that is
+running and no longer enqueueing — which from the outside is indistinguishable
+from an idle one: every gauge stays fresh, `/metrics` answers 200, the process
+looks healthy. On the only process carrying the schedule that is a silently
+stopped schedule, i.e. the very failure hosting the poller here was meant to
+eliminate, back through another door.
+
+So `start!` also publishes **`sidekiq_cron_poll_age_seconds`**: seconds since the
+poller last completed a tick. It measures the loop turning, so it stays flat on a
+healthy but idle schedule and climbs the moment ticks stop — the one shape an
+alert can be written against:
+
+```
+max:sidekiq.cron_poll_age_seconds{…} > 10 * <poll interval>
+```
+
+Before the first tick it measures from `start!`, so a poller that never manages
+one reads as climbing rather than as no-data; it is `nil` (and the series absent)
+on any process that hosts no poller, and again once `stop!` runs.
+
+Deliberately **not** "time since last enqueue", which would climb on any quiet
+schedule and so alert on nothing happening. Answering *should this job have run
+by now?* needs a per-job check against the cron expression, not a gauge.
 
 > **Every schedule entry must declare `active_job: true`.** This process has no
 > Rails, so it cannot resolve the job classes; sidekiq-cron then falls back to
