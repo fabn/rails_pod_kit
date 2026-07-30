@@ -15,8 +15,9 @@ entry point:
   The SolidQueue queue gauges are the gem's own — yabeda has no plugin for it.
 - **Health checks** on `/healthz` for startup/liveness/readiness probes — a thin
   wrapper around [health-monitor-rails](https://github.com/lbeder/health-monitor-rails).
-- **A supervised SolidQueue scheduler thread**, so the job executor can be
-  autoscaled to zero without stranding recurring/scheduled jobs.
+- **Scheduler hosting for scale-to-zero**, so a job executor can be autoscaled to
+  zero without stranding recurring/scheduled jobs: a supervised SolidQueue
+  scheduler thread, and a supervised sidekiq-cron poller for Sidekiq.
 
 The gem is deliberately **connection-agnostic**: it never reads `REDIS_URL` and
 makes no TLS decisions. Where a Redis connection is needed the host injects its
@@ -50,10 +51,13 @@ bundle exec rake                         # Run both rspec and rubocop (default t
 
 The specs run **in isolation** — they do not boot a host Rails app, and there is
 no database. Every metrics hook is a complete no-op when the exporter is disabled
-or in the `test` environment, so the suite never binds port `9394`. The
-SolidQueue scheduler is the one piece not gated on that switch (it is not an
-exporter); it stays out of the suite because nothing calls it — in a host app it
-is started from Puma's `after_booted`.
+or in the `test` environment, so the suite never binds port `9394`.
+
+The two schedulers are not gated on that switch (they are not exporters —
+`scheduler_enabled` is theirs, and it stays on in `test`). What keeps them
+harmless in the suite is that neither spawns a real thread there: the specs stub
+`Concurrent::TimerTask.new` and drive the supervisor tick by hand, so nothing
+ever polls Redis or touches a database.
 
 ### CI Matrix
 
@@ -125,7 +129,7 @@ There are two distinct entry points, by design:
   `fail_scrape_on_error: true` (what `run_exporter!` passes on its own pod)
   turns it into a failed scrape, i.e. honest no-data.
   `SchedulerRunner` runs a scheduler-only `SolidQueue::Scheduler` in a thread
-  supervised by a `Concurrent::TimerTask` — deliberately *not* the full
+  supervised by the shared `Supervisor` — deliberately *not* the full
   supervisor, whose Puma watchdog takes the host process down on a DB blip
   (rails/solid_queue#512). `run_exporter!` combines both into the always-on
   1-replica pod; unlike GlobalExporter it needs the host's ActiveRecord models,
@@ -141,7 +145,30 @@ There are two distinct entry points, by design:
   metrics, meant to run as its own 1-replica Deployment so those series come from
   a single source, decoupled from web/worker autoscaling. The host owns the
   entrypoint (the gem ships no executable) so the Redis connection config stays
-  a host decision.
+  a host decision. `scheduler: true` adds GlobalScheduler to the same process.
+- **`RailsPodKit::GlobalScheduler`** (`lib/rails_pod_kit/global_scheduler.rb`) —
+  the Sidekiq counterpart of SolidQueue's `SchedulerRunner`: the sidekiq-cron
+  poller in a process that is *not* a Sidekiq server, so the worker fleet can
+  scale to zero without losing the schedule. Rails-free, which is only possible
+  because `Job#enqueue!` falls back to pushing an ActiveJob wrapper message
+  naming the class as a string when it cannot resolve it — hence the
+  `active_job: true` requirement on every entry, which `start!` warns about. It
+  also loads the schedule file itself (sidekiq-cron does that from a Sidekiq
+  server's `:startup` event) and requires `erb`, which sidekiq-cron uses without
+  requiring. Supervised by the shared `Supervisor`, because a dead poller on the
+  only scheduling process is a silently stopped schedule.
+- **`RailsPodKit::Supervisor`** (`lib/rails_pod_kit/supervisor.rb`) — the
+  keep-the-background-thread-alive timer both schedulers run under: immediate
+  first tick, a `@stopping` latch so a shutdown cannot be undone by a tick
+  already in flight, and `ErrorReporter` instead of dying (a
+  `Concurrent::TimerTask` silently drops a raising block). The three things that
+  differ per worker are injected — `start:` (a callable returning the started
+  worker), `alive:` and `stop:` (a method name to send the worker, or a callable
+  taking it). `alive:` accepts a callable precisely for `GlobalScheduler`:
+  `Sidekiq::Scheduled::Poller` exposes no liveness of its own, so the check has
+  to peek at `@thread`. Railties-free, since one of its two users is.
+- **`RailsPodKit::Shutdown`** (`lib/rails_pod_kit/shutdown.rb`) — the
+  block-until-SIGTERM self-pipe shared by the always-on entry points.
 
 ### The metrics invariant
 
@@ -184,7 +211,7 @@ reads it, and the gemspec reads that. The release flow is fully automated:
 ## Repository Structure
 
 ```
-lib/rails_pod_kit/         # the gem
+lib/rails_pod_kit/         # the gem (global_exporter + global_scheduler = the always-on singleton pod)
 lib/rails_pod_kit/solid_queue/  # queue gauges + supervised scheduler thread
 spec/rails_pod_kit/        # isolated unit specs + the metrics invariant spec
 Appraisals                 # Rails/Rack test matrix definitions
@@ -199,10 +226,11 @@ VERSION                    # single source of truth for the version
 - **Runtime:** the yabeda stack (`yabeda`, `yabeda-sidekiq`, `yabeda-puma-plugin`,
   `yabeda-prometheus-mmap`), `webrick`, `anyway_config`, `concurrent-ruby`,
   `health-monitor-rails`, `redis`. Declared in `rails_pod_kit.gemspec`.
-- **Host-provided:** `puma`, `sidekiq`, `solid_queue`, `rack` and — under Rack 3
-  — `rackup`. Not in the gemspec, because in a real app they are the host's
-  dependencies. `puma`, `sidekiq` and `rack` are in the `Gemfile` / `Appraisals`
-  for the specs; `solid_queue` is not — its specs stub the two ActiveRecord
-  models and the scheduler, so the suite needs no database.
+- **Host-provided:** `puma`, `sidekiq`, `sidekiq-cron`, `solid_queue`, `rack` and
+  — under Rack 3 — `rackup`. Not in the gemspec, because in a real app they are
+  the host's dependencies. `puma`, `sidekiq`, `sidekiq-cron` and `rack` are in
+  the `Gemfile` / `Appraisals` for the specs; `solid_queue` is not — its specs
+  stub the two ActiveRecord models and the scheduler, so the suite needs no
+  database.
 - Dependabot (`.github/dependabot.yml`) opens weekly bundler + github-actions
   update PRs.

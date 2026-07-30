@@ -2,6 +2,7 @@
 
 require 'rails_pod_kit/config'
 require 'rails_pod_kit/exporter'
+require 'rails_pod_kit/shutdown'
 require 'rails_pod_kit/solid_queue/metrics'
 require 'rails_pod_kit/solid_queue/scheduler_runner'
 
@@ -49,10 +50,12 @@ module RailsPodKit
     #
     # Not gated on `RailsPodKit.enabled?` — that switch owns the metrics
     # exporter, and an app may well want the scheduler with metrics turned off.
-    # The guard against starting one in a console or in specs is *where* you
+    # `scheduler_enabled` is the switch that does own this (see Config); beyond
+    # it, the guard against starting one in a console or in specs is *where* you
     # call this from (`after_booted`, or the exporter entrypoint).
     def start_scheduler!(**)
       return scheduler_runner if scheduler_runner
+      return unless RailsPodKit.scheduler_enabled?('SolidQueue scheduler')
 
       @scheduler_runner = SchedulerRunner.new(**).start
     end
@@ -97,13 +100,9 @@ module RailsPodKit
     end
 
     # Blocks the main thread (the exporter and the scheduler both run on their
-    # own) until the kubelet signals. A self-pipe rather than a Queue or a
-    # Mutex: writing to an IO is one of the few things safe to do from a trap
-    # handler.
+    # own) until the kubelet signals.
     def await_shutdown
-      reader, writer = IO.pipe
-      %w[INT TERM].each { |signal| Signal.trap(signal) { writer.puts(signal) } }
-      reader.gets
+      Shutdown.await
     end
   end
 end

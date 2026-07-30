@@ -14,6 +14,9 @@ gem 'rails', '>= 7.1'
 # would use.
 gem 'puma', '~> 7.2'
 gem 'sidekiq', '~> 7.3'
+# Only the scheduler entry point needs it, and only the host declares it in a
+# real app — the specs exercise the poller wiring against the real gem.
+gem 'sidekiq-cron', '~> 2.4'
 # Rack 2.2 requires 'ostruct' (rack/show_exceptions) but doesn't declare it;
 # since Ruby 3.5 ostruct is no longer a default gem, so it must be explicit.
 gem 'ostruct'

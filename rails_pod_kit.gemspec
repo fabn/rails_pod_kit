@@ -13,9 +13,10 @@ Gem::Specification.new do |spec|
     opinionated kit for running Rails applications on Kubernetes: Puma, Sidekiq
     and SolidQueue runtime metrics in Prometheus text format on an in-process
     /metrics endpoint (default port 9394), plus a /healthz endpoint wired for
-    liveness/readiness/startup probes. No sidecar, no separate collector. For
-    SolidQueue it also ships the supervised scheduler thread that lets the job
-    executor scale to zero.
+    liveness/readiness/startup probes. No sidecar, no separate collector. It
+    also hosts the schedulers that let a job executor scale to zero without
+    stranding its recurring jobs: a supervised SolidQueue scheduler thread, and
+    a supervised sidekiq-cron poller for Sidekiq.
   DESC
   spec.homepage = 'https://github.com/fabn/rails_pod_kit'
   spec.license  = 'MIT'

@@ -60,17 +60,29 @@ module RailsPodKit
     #   transports — the Puma plugin's exporter (`prometheus_silence_logger`)
     #   and the WEBrick exporter used by Sidekiq / the dedicated global exporter
     #   (`Rack::CommonLogger`). Flip to false only to debug the exporter itself.
+    # scheduler_enabled: kill switch for the hosted schedulers (the sidekiq-cron
+    #   poller and the SolidQueue scheduler thread). Separate from `enabled`,
+    #   which owns the metrics exporter: an app may well want one without the
+    #   other, and the scheduler is the piece you may need to turn off in a
+    #   hurry — it is a single point of failure for the whole schedule, and
+    #   `RAILS_POD_KIT_SCHEDULER_ENABLED=false` + a restart beats a deploy at
+    #   3am. Defaults to on *including* in the test env, unlike `enabled`:
+    #   nothing starts a scheduler implicitly (it takes an explicit call from an
+    #   entry point), so there is no port to protect, and a flag that fails
+    #   closed on a typo would silently stop a schedule.
     attr_config :enabled,
                 :port,
                 :puma_control_url,
                 sidekiq_global_metrics: :web,
                 retries_segmented_by_queue: false,
-                silence_exporter_access_log: true
+                silence_exporter_access_log: true,
+                scheduler_enabled: true
 
     coerce_types port: :integer,
                  enabled: :boolean,
                  retries_segmented_by_queue: :boolean,
-                 silence_exporter_access_log: :boolean
+                 silence_exporter_access_log: :boolean,
+                 scheduler_enabled: :boolean
 
     def initialize(overrides = nil)
       super
@@ -85,6 +97,10 @@ module RailsPodKit
 
     def enabled?
       !!enabled
+    end
+
+    def scheduler_enabled?
+      !!scheduler_enabled
     end
 
     # True unless we're clearly in a test environment. Kept independent of
@@ -113,6 +129,16 @@ module RailsPodKit
 
     def enabled?
       config.enabled?
+    end
+
+    # Gate shared by both hosted schedulers. Says so out loud when it turns one
+    # off: a process that starts, stays up and quietly schedules nothing is the
+    # one failure this whole feature exists to avoid.
+    def scheduler_enabled?(what = 'scheduler')
+      return true if config.scheduler_enabled?
+
+      warn "[rails_pod_kit] scheduler_enabled=false — #{what} not started"
+      false
     end
   end
 end

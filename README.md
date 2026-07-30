@@ -11,8 +11,9 @@ packaged behind a single, opinionated entry point:
 - **Health checks** on `/healthz` (database, cache, optionally Redis and Sidekiq),
   wired for Kubernetes startup/liveness/readiness probes — a thin, opinionated
   wrapper around [health-monitor-rails](https://github.com/lbeder/health-monitor-rails).
-- **A supervised SolidQueue scheduler thread**, so a SolidQueue job executor can
-  be autoscaled to zero without stranding its recurring and scheduled jobs.
+- **Scheduler hosting for scale-to-zero**, so a job executor can be autoscaled to
+  zero without stranding its recurring and scheduled jobs: a supervised
+  SolidQueue scheduler thread, and a supervised sidekiq-cron poller for Sidekiq.
 
 The metrics side is a thin wrapper around the
 [yabeda](https://github.com/yabeda-rb) ecosystem:
@@ -81,13 +82,15 @@ On a SolidQueue stack there is no step 3 — see
 config: besides the `RailsPodKit.configure` block (which runs last and wins),
 every setting can come from a `RAILS_POD_KIT_*` env var (e.g.
 `RAILS_POD_KIT_ENABLED=false`, `RAILS_POD_KIT_PORT=9500`,
-`RAILS_POD_KIT_SIDEKIQ_GLOBAL_METRICS=off`) or an optional
+`RAILS_POD_KIT_SIDEKIQ_GLOBAL_METRICS=off`,
+`RAILS_POD_KIT_SCHEDULER_ENABLED=false`) or an optional
 `config/rails_pod_kit.yml` — handy for the Rails-free exporter pod, which runs
 no initializers.
 
 | setting | default | meaning |
 |---------|---------|---------|
-| `enabled` | on, except in `test` | master switch; `false` ⇒ no exporter, no port bound |
+| `enabled` | on, except in `test` | master switch for the **exporter**; `false` ⇒ no exporter, no port bound |
+| `scheduler_enabled` | on, everywhere | kill switch for the **hosted schedulers** (sidekiq-cron poller, SolidQueue scheduler thread). Separate from `enabled` — an app may want one without the other, and this is the one you may need to flip in a hurry, since the scheduler is a single point of failure for the whole schedule. On even in `test`: nothing starts a scheduler implicitly, so there is no port to protect, and a switch that failed closed on a typo would silently stop a schedule. Turning it off logs a warning naming the scheduler that did not start. |
 | `port` | `9394` (env `PROMETHEUS_EXPORTER_PORT`) | exporter bind port for Puma **and** Sidekiq |
 | `sidekiq_global_metrics` | `:web` | who exports the Redis-wide queue metrics: `:web` = only the always-on web process (no per-worker duplication); `:all` = every worker; `:off` = nobody |
 | `puma_control_url` | `tcp://127.0.0.1:9293` (env `PUMA_CONTROL_URL`) | localhost-only Puma control app the stats reader queries |
@@ -348,6 +351,73 @@ declares the cluster gauges, starts the exporter and blocks until SIGTERM.
 Booting the full host app just to read a handful of Redis counters would cost
 ~300Mi RSS for nothing — this process sits at ~60Mi.
 
+## Sidekiq: scale-to-zero
+
+Being an always-on singleton makes that same pod the right home for the
+**sidekiq-cron poller**, which is what lets the worker fleet scale to zero.
+
+sidekiq-cron installs its poller from inside `Sidekiq.configure_server`, so on
+its own the schedule exists only while a Sidekiq server is alive. At zero
+replicas nothing polls, nothing is enqueued, and nothing ever raises the queue
+depth that would wake a worker back up — a closed loop that forces a permanent
+floor of one replica just to keep a poller alive. Missed runs are not caught up
+afterwards either: `reschedule_grace_period` (60s by default) discards any run
+older than itself.
+
+The poller has no such requirement of its own — `Sidekiq::Cron::Poller` is a
+Redis-polling thread that runs in any process holding a Sidekiq config — so
+`scheduler: true` hosts it here:
+
+```ruby
+RailsPodKit::GlobalExporter.run!(
+  redis: { url: ENV['REDIS_URL'] },
+  scheduler: true,
+  schedule_file: File.expand_path('../config/schedule.yml', __dir__)
+)
+```
+
+`schedule_file:`, `poll_interval:` and `reschedule_grace_period:` override
+sidekiq-cron's defaults (`config/schedule.yml` resolved against the working
+directory, polled every 30s, catching up runs at most 60s late);
+`supervision_interval:` tunes the liveness check. `RailsPodKit::GlobalScheduler`
+is usable on its own (`start!` / `stop!`) if the always-on process is something
+other than the exporter.
+
+> **Size `reschedule_grace_period` over your worst restart.** It is what makes
+> restarting the *only* scheduling process free: below it a missed occurrence is
+> caught up on the next poll, above it the run is skipped silently. sidekiq-cron
+> defaults to 60s, which a node drain or an evicted pod can easily exceed —
+> rolling updates are covered anyway, since a `maxSurge` overlap means there is
+> no gap at all. Catching up is bounded, not repeated: `last_enqueue_time` in
+> Redis still gates each occurrence to exactly one enqueue.
+>
+> This is the reason a singleton scheduler does **not** need to become an HA
+> pair. A second replica is safe for the poller (same `zadd` lock) but doubles
+> every metric series the pod publishes, and a `PodDisruptionBudget` on a
+> single-replica Deployment stalls node drains rather than protecting anything.
+
+The poller runs under `RailsPodKit::Supervisor` — the same supervising timer
+that keeps the SolidQueue scheduler thread alive, since both share the failure
+mode: the thread dies, the host process notices nothing, and the schedule stops
+silently. The cron poller's own loop swallows StandardError, so a Redis blip
+costs one skipped tick; the supervisor makes anything it does *not* catch a
+skipped tick too.
+
+> **Every schedule entry must declare `active_job: true`.** This process has no
+> Rails, so it cannot resolve the job classes; sidekiq-cron then falls back to
+> pushing a raw message, and only that flag makes the message an ActiveJob
+> wrapper (naming the class as a *string*, which the worker resolves). Without it
+> the job is pushed as a bare Sidekiq job and runs outside ActiveJob entirely.
+> `start!` logs a warning naming any entry in that state. For the same reason the
+> schedule file's ERB must not reach for Rails.
+
+Leaving the workers' own poller in place is fine and costs nothing: enqueueing is
+gated on a Redis `zadd` that exactly one caller wins — the same lock that already
+lets multiple worker replicas coexist without double-firing. Both processes must
+then read the *same* schedule file, though: `load_from_hash!` removes the
+schedule-sourced jobs that are absent from the file it is given, so two processes
+loading different files will delete each other's entries.
+
 ## SolidQueue: scale-to-zero
 
 SolidQueue's executor has nothing to do while the queue is empty, so it is the
@@ -378,10 +448,11 @@ This is deliberately **not** `plugin :solid_queue`. That one runs the full
 supervisor, which forks and whose watchdog takes Puma down when the supervisor
 exits — and a transient Postgres disconnect is enough to cause that
 ([rails/solid_queue#512](https://github.com/rails/solid_queue/issues/512)). Here
-a DB blip at worst kills the scheduler thread; a `Concurrent::TimerTask` (the
-same primitive SolidQueue supervises its own processes with) notices on the next
-tick and starts a fresh one, the process itself never notices, and the scheduler
-re-registers on recovery.
+a DB blip at worst kills the scheduler thread; `RailsPodKit::Supervisor` — a
+`Concurrent::TimerTask`, the same primitive SolidQueue supervises its own
+processes with, and the same one that keeps the sidekiq-cron poller alive —
+notices on the next tick and starts a fresh one, the process itself never
+notices, and the scheduler re-registers on recovery.
 
 Running it on every replica is safe: enqueues stay exactly-once via the unique
 index on `solid_queue_recurring_executions (task_key, run_at)`. Static tasks come
@@ -395,8 +466,10 @@ ones from the DB.
 | `recurring_schedule_file` | `config/recurring.yml` | static task definitions; skipped when absent |
 
 `start_scheduler!` is **not** gated on `enabled` — that switch owns the metrics
-exporter, and an app may well want the scheduler with metrics off. What keeps it
-out of consoles and specs is *where* you call it from.
+exporter, and an app may well want the scheduler with metrics off.
+`scheduler_enabled` is the switch that does own it, shared with the sidekiq-cron
+poller. Beyond that, what keeps it out of consoles and specs is *where* you call
+it from.
 
 ### 2. Queue depth has to be visible
 
@@ -493,6 +566,8 @@ serves `solid_queue_*` and nothing else, so the check config needs no filters.
   a WEBrick thread instead, started at most once per process.
 - **SolidQueue and Sidekiq are the host's.** The gem depends on neither; the
   SolidQueue integration is inert until you call it, exactly like the Sidekiq one.
+  `sidekiq-cron` too: it is required only when `GlobalScheduler.start!` is called,
+  so an app that does not schedule anything need not carry it.
 - **Queue-gauge query cost.** The gauges run four small grouped aggregates per
   scrape. `MIN(created_at)` is not covered by SolidQueue's indexes, so on a
   backlog of many thousands of rows it is a scan — cheap at a normal scrape
