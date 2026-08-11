@@ -21,6 +21,8 @@ module RailsPodKit
     def install!(sidekiq_config = nil)
       return unless RailsPodKit.enabled?
 
+      export_policy_env!(collect_cluster_metrics: RailsPodKit.config.sidekiq_global_metrics == :all)
+
       require 'yabeda/sidekiq'
       require 'yabeda/prometheus/mmap'
 
@@ -72,14 +74,33 @@ module RailsPodKit
     # server — i.e. the web (Puma) process under the :web policy. The web has the
     # Sidekiq client configured (Redis access), so yabeda-sidekiq can read the
     # cluster stats there. We force `collect_cluster_metrics` on and keep
-    # `declare_process_metrics` off (the web runs no jobs). Must run before
-    # Yabeda.configure! so the gauges are declared.
+    # `declare_process_metrics` off (the web runs no jobs).
     def enable_global_collection!
+      export_policy_env!(collect_cluster_metrics: true, declare_process_metrics: false)
+
       require 'yabeda/sidekiq'
 
       Yabeda::Sidekiq.config.collect_cluster_metrics = true
       Yabeda::Sidekiq.config.declare_process_metrics = false
       apply_retries_segmentation!
+    end
+
+    # Publishes the policy through yabeda-sidekiq's own env-backed config, and it
+    # has to happen *before* `require 'yabeda/sidekiq'`.
+    #
+    # yabeda-sidekiq declares its cluster gauges inside its own `Yabeda.configure`
+    # block, guarded by `collect_cluster_metrics` — and when Yabeda has already
+    # been configured (any host where its Railtie ran first) requiring the file
+    # evaluates that block immediately. Assigning the flag afterwards is then too
+    # late: the gauges are never declared, while the `collect` block — which reads
+    # the same flag on every scrape — starts referencing them, and /metrics 500s
+    # with a NameError. The env values are read when the config object is built,
+    # so setting them here makes the declaration see the policy whenever the
+    # require lands.
+    def export_policy_env!(collect_cluster_metrics:, declare_process_metrics: nil)
+      ENV['YABEDA_SIDEKIQ_COLLECT_CLUSTER_METRICS'] = collect_cluster_metrics.to_s
+      ENV['YABEDA_SIDEKIQ_DECLARE_PROCESS_METRICS'] = declare_process_metrics.to_s unless declare_process_metrics.nil?
+      ENV['YABEDA_SIDEKIQ_RETRIES_SEGMENTED_BY_QUEUE'] = RailsPodKit.config.retries_segmented_by_queue.to_s
     end
 
     # Starts the background WEBrick exporter shared with the other non-Puma
