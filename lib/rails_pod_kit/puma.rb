@@ -43,10 +43,16 @@ module RailsPodKit
       puma_config.plugin :yabeda
       puma_config.plugin :yabeda_prometheus
 
-      # Silence the exporter's per-scrape access log. The `prometheus_silence_logger`
-      # DSL method is defined by the :yabeda_prometheus plugin, so this must run
-      # after the plugin is loaded above. See Config#silence_exporter_access_log.
-      puma_config.prometheus_silence_logger(true) if RailsPodKit.config.silence_exporter_access_log
+      # Drop the exporter's per-scrape access log the same way the WEBrick path
+      # does (see RailsPodKit::Exporter.start!): the log line comes from the
+      # Rack::CommonLogger the exporter's rack app mounts unless this is exactly
+      # 'false'. See Config#silence_exporter_access_log.
+      #
+      # Deliberately not `prometheus_silence_logger(true)`, which is the plugin's
+      # own knob: it swaps Puma's whole log writer for LogWriter.null, and that
+      # writer also carries the exporter's errors — so a /metrics that raises on
+      # every scrape would fail completely silently.
+      ENV['PROMETHEUS_EXPORTER_LOG_REQUESTS'] = 'false' if RailsPodKit.config.silence_exporter_access_log
 
       # `config/puma.rb` is evaluated before Rails is loaded, so requiring this
       # gem here loads yabeda *before* `defined?(Rails)`, and yabeda's Railtie

@@ -31,14 +31,28 @@ RSpec.describe RailsPodKit::Puma do
     end
 
     it 'silences the exporter per-scrape access log by default' do
+      ENV.delete('PROMETHEUS_EXPORTER_LOG_REQUESTS')
+
       described_class.activate(puma_config)
 
-      expect(puma_config).to have_received(:prometheus_silence_logger).with(true)
+      expect(ENV.fetch('PROMETHEUS_EXPORTER_LOG_REQUESTS')).to eq('false')
+    ensure
+      ENV.delete('PROMETHEUS_EXPORTER_LOG_REQUESTS')
     end
 
     it 'leaves the exporter access log on when the flag is disabled' do
+      ENV.delete('PROMETHEUS_EXPORTER_LOG_REQUESTS')
       RailsPodKit.configure { |c| c.silence_exporter_access_log = false }
 
+      described_class.activate(puma_config)
+
+      expect(ENV['PROMETHEUS_EXPORTER_LOG_REQUESTS']).to be_nil
+    end
+
+    # The plugin's own knob swaps Puma's log writer for LogWriter.null, which
+    # also carries the exporter's errors — a /metrics raising on every scrape
+    # would then fail silently.
+    it 'never silences Puma\'s log writer, which would hide exporter errors' do
       described_class.activate(puma_config)
 
       expect(puma_config).to_not have_received(:prometheus_silence_logger)
