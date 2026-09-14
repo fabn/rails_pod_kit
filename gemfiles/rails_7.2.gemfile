@@ -14,5 +14,6 @@ gem "rubocop", "~> 1.50"
 gem "rubocop-performance"
 gem "rubocop-rspec"
 gem "rack", "~> 2.2"
+gem "json", "< 3"
 
 gemspec path: "../"
