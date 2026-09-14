@@ -609,6 +609,17 @@ serves `solid_queue_*` and nothing else, so the check config needs no filters.
 - **Puma control app.** `yabeda-puma-plugin` reads Puma's thread-pool stats
   through Puma's control app, so `Puma.activate` activates one on a
   localhost-only socket (`no_token: true`, never network-exposed).
+- **`json` 3 needs Rails 8.1.** On ActiveSupport **< 8.1** with **json >= 3**
+  the metrics silently stop being recorded. ActiveSupport up to 8.0 encodes
+  with `JSON.generate(..., quirks_mode: true)`, a keyword json 3.0 removed;
+  prometheus-client-mmap builds each metric's mmap key with `to_json`, catches
+  the resulting `ArgumentError` and falls back to `SimpleValue`, which keeps the
+  value in the recording process instead of the shared mmap file. Nothing
+  raises and `/metrics` still answers 200 — the series just go missing. The gem
+  probes for this at boot and logs a warning naming it, because the constraint
+  is conditional and so cannot live in the gemspec: `json < 3` there would hold
+  back Rails 8.1+ hosts, which are fine on json 3. Pin `json` to `"< 3"` in the
+  host's Gemfile, or move to Rails 8.1.
 - **Rack version.** Under **Rack 3+** the mmap exporter's WEBrick handler also
   needs the `rackup` gem. Under Rack 2.x `webrick` alone is enough, but on
   Ruby ≥ 4.0 make sure `ostruct` is in the bundle (Rack 2.2 requires it
