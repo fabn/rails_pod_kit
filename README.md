@@ -609,6 +609,26 @@ serves `solid_queue_*` and nothing else, so the check config needs no filters.
 - **Puma control app.** `yabeda-puma-plugin` reads Puma's thread-pool stats
   through Puma's control app, so `Puma.activate` activates one on a
   localhost-only socket (`no_token: true`, never network-exposed).
+- **`json` 3 needs Rails 8.1.** On ActiveSupport **< 8.1**, json **>= 3** breaks
+  *every* `to_json` call in the process, not just this gem's. ActiveSupport up
+  to 8.0 encodes with `JSON.generate(..., quirks_mode: true)`; json 3.0 turned
+  that unknown keyword from a silent no-op into an `ArgumentError`, and Rails
+  dropped the call only in 8.1. The whole ecosystem is pinning `json` to `"< 3"`
+  behind a Rails-version guard, and so should a host on 7.2 or 8.0 — the
+  appraisals here do exactly that.
+
+  What is specific to this gem is the *shape* of its symptom. Everywhere else
+  the error is loud; in the metrics path it is not. prometheus-client-mmap
+  builds each metric's mmap key with `to_json` and catches the failure in
+  `UsesValueType#value_object`, logging at INFO before falling back to
+  `SimpleValue` — which keeps the value in the recording process instead of the
+  shared mmap file. So `/metrics` still answers 200 and the series simply go
+  missing. If you are chasing an empty exposition, check this first.
+
+  Not expressible as a gemspec dependency: it applies only below ActiveSupport
+  8.1, and `json < 3` there would hold back Rails 8.1+ hosts, which are fine
+  (verified: AS 8.1.3.1 + json 3.0.2 encodes normally).
+
 - **Rack version.** Under **Rack 3+** the mmap exporter's WEBrick handler also
   needs the `rackup` gem. Under Rack 2.x `webrick` alone is enough, but on
   Ruby ≥ 4.0 make sure `ostruct` is in the bundle (Rack 2.2 requires it
