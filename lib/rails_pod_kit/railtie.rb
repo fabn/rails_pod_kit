@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require 'rails_pod_kit/config'
-require 'rails_pod_kit/mmap_guard'
 
 require 'rails'
 require 'rails/railtie'
@@ -18,12 +17,6 @@ module RailsPodKit
       app.routes.append do
         mount HealthMonitor::Engine, at: '/' if RailsPodKit::Health.auto_mount?
       end
-    end
-
-    # After the host's initializers, so the warning lands in the configured
-    # logger rather than whatever was in place mid-boot.
-    initializer 'rails_pod_kit.check_mmap_serialization', after: :load_config_initializers do
-      RailsPodKit::MmapGuard.check!
     end
   end
 end
