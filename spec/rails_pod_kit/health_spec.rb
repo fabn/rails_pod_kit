@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'connection_pool'
+require 'redis'
 require 'rails_pod_kit/health'
 
 RSpec.describe RailsPodKit::Health do
@@ -47,6 +49,32 @@ RSpec.describe RailsPodKit::Health do
       described_class.install!(redis: connection, silence_controller_log: false)
 
       expect(provider('Redis').configuration.connection).to be(connection)
+    end
+
+    context 'when the host injects a ConnectionPool::Wrapper' do
+      # The wrapper is a BasicObject: anything that is not on its own allowlist
+      # reaches the wrapped connection, so a block that raises stands in for an
+      # unreachable broker and counts the checkouts a predicate would force.
+      let(:checkouts) { [] }
+      let(:wrapper) do
+        ConnectionPool::Wrapper.new(size: 1, timeout: 1) do
+          checkouts << :checkout
+          raise Redis::CannotConnectError, 'connection refused'
+        end
+      end
+
+      it 'hands the wrapped pool to the provider' do
+        described_class.install!(redis: wrapper, silence_controller_log: false)
+
+        expect(provider('Redis').configuration.connection).to be_a(ConnectionPool)
+      end
+
+      it 'installs without opening a connection when the broker is unreachable' do
+        expect { described_class.install!(redis: wrapper, silence_controller_log: false) }
+          .to_not raise_error
+
+        expect(checkouts).to be_empty
+      end
     end
 
     it 'adds the sidekiq provider with the given thresholds only when asked' do
