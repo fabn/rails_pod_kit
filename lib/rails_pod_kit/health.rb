@@ -36,10 +36,11 @@ module RailsPodKit
     # Configures HealthMonitor with the kit's defaults.
     #
     # redis:   optional Redis connection options hash (same shape the host
-    #          passes to Sidekiq) or a ready connection object (Redis /
-    #          ConnectionPool); when given the Redis provider is added. Omit
-    #          entirely (or pass nil) on hosts with no Redis dependency to get
-    #          a database + cache only endpoint.
+    #          passes to Sidekiq) or a ready connection object (Redis,
+    #          ConnectionPool, or a ConnectionPool::Wrapper, which is unwrapped
+    #          to the pool behind it); when given the Redis provider is added.
+    #          Omit entirely (or pass nil) on hosts with no Redis dependency to
+    #          get a database + cache only endpoint.
     # path:    mount-relative endpoint path (default :healthz).
     # sidekiq: optional thresholds hash; when given the Sidekiq provider is
     #          added with the provided `queue_size:` / `latency:` overrides
@@ -88,6 +89,17 @@ module RailsPodKit
     end
 
     def build_connection(redis)
+      # ConnectionPool::Wrapper is a BasicObject delegator: it defines no
+      # predicates of its own, so every `is_a?` on it falls through to
+      # method_missing and checks out a real connection. That costs a
+      # connection attempt here at boot -- fatal when the broker is down, the
+      # very outage a health endpoint exists to report -- and health_monitor's
+      # own `is_a?(ConnectionPool)` test misses the wrapper anyway and nests it
+      # in a second pool, paying another checkout per command. Hand over the
+      # pool it wraps. `respond_to?` is answered from the wrapper's own
+      # allowlist without touching the network, and is false for the hash,
+      # Redis and ConnectionPool arguments handled below.
+      return redis.wrapped_pool if redis.respond_to?(:wrapped_pool)
       return redis unless redis.is_a?(Hash)
 
       require 'redis'
